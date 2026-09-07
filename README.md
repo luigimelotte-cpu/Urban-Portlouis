@@ -47,9 +47,11 @@ python3 scripts/portlouis_site.py --workdir .
 python3 scripts/portlouis_site.py --workdir . --stage register
 ```
 
-`--stage register` fits the transform, writes `qa_overlay.png` and
-`qa_register.dxf`, and stops. Look at the overlay: green linework should sit on
-roofs and kerbs, yellow traced water on the harbour edge. Then rerun without it.
+`--stage register` fits the transform, writes both QA overlays and
+`qa_register.dxf`, and stops. Look at **`qa_overlay_studyarea.png` first** — 600 m
+across a page resolves a few metres of error; the full frame at 1479 m does not.
+Green linework should sit on roofs and kerbs, yellow traced water on the harbour
+edge. Then rerun without it.
 
 ### Flags
 
@@ -65,7 +67,12 @@ roofs and kerbs, yellow traced water on the harbour edge. Then rerun without it.
 `PortLouis_SITE_metres.dxf` · `PortLouis_SITE_millimetres.dxf` ·
 `preview.png` (full frame) · `preview_studyarea.png` (cadrage only, for
 comparing against the existing drawing) · `qa_overlay.png` ·
-`coverage_report.md`
+`qa_overlay_studyarea.png` · `coverage_report.md`
+
+The DXF also carries `80_GRID_100M` — the 100 m analysis grid over the study
+square with every cell labelled A1–F6, frozen so it does not print. The coverage
+report names sparse cells by that label, so the grid is what makes the report
+findable in CAD.
 
 ---
 
@@ -139,10 +146,10 @@ linear watercourses, and folding them into `02_WATER` would contaminate a
 verified layer with OSM geometry. They get their own layer instead of being
 dropped.
 
-**`80_GRID_100M` is computed, not read.** The brief refers to it but it is not
-among the layers the base DXF is stated to contain. The coverage report builds a
-6 × 6 grid of 100 m cells on the local origin, labelled A1–F6, which will line
-up with the layer if it exists.
+**`80_GRID_100M` is generated, not read.** The brief refers to it but it is not
+among the layers the base DXF is stated to contain, so the pipeline draws it: a
+6 × 6 grid of 100 m cells on the local origin, labelled A1–F6, aligned to the
+same cells the coverage report scores.
 
 Everything else follows the brief. In particular: no footprint is vectorised
 from the raster, no tree is invented inside a park polygon, no fallback geometry
@@ -167,14 +174,15 @@ python3 scripts/portlouis_site.py --workdir /tmp/fixture
 ```
 
 Verified: DXF is R2018 with `$INSUNITS` 6 / 4; the millimetre file is exactly
-×1000 on all 3988 vertices plus circle radii and hatch pattern scale; the study
+×1000 on all 4083 vertices plus circle radii, text heights and hatch pattern
+scale; every layer carrying entities has a table entry; the study
 square measures 600.000000 m; carried layers survive into both files; layer
 colours, lineweights and the frozen centreline layer are correct; `--stage
 register` writes no site DXF; a missing base DXF aborts with exit 2; a shape
 mismatch in `02_WATER` trips the rotation warning at 28°, reaches rms 147 m, and
 aborts before writing anything.
 
-Seven bugs were found this way and fixed:
+Eight bugs were found this way and fixed:
 
 - The millimetre file scaled only new geometry, leaving everything carried from
   the base DXF in metres — one file holding two unit systems. It is now produced
@@ -214,9 +222,18 @@ Seven bugs were found this way and fixed:
   `polygonize`, verified against all four shapes: one closed outer ring, an outer
   split into open halves, outer-plus-inner courtyards, and disjoint outer rings.
 
-The last three were invisible until the fixture was extended to include the
+- **Two new layers were never declared.** `35_WATERWAY` and `80_GRID_100M` had
+  entities written to them but no LAYER table entry, because two edits adding
+  them to `LAYERS` silently matched nothing and only the entity count was
+  checked afterwards. DXF permits this — the entities land on an implicit layer
+  with default colour and lineweight and no frozen flag, and nothing errors, so
+  the grid would have printed with the drawing. `write_dxf` now asserts that
+  every layer an entity uses has a table entry, and fails loudly if not.
+
+The last four were invisible until the fixture was extended to include the
 things real OSM actually contains — relations, courtyards, open coastline ways
-and watercourses. The first fixture had none of them.
+and watercourses — and until the DXF was checked for layer *properties* rather
+than just entity counts.
 
 The registration fit, the Overpass client and the coverage report have **not**
 been exercised against real OSM data — only against the fixture.

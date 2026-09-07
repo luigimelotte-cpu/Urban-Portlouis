@@ -101,9 +101,13 @@ LAYERS: dict[str, tuple[int, int]] = {
     "32_FOOTWAY":           (253,  9),
     "33_RAILWAY":           (8,    9),
     "34_PARKING":           (253,  9),
+    "35_WATERWAY":          (5,    9),
     "40_TREES":             (3,    9),
     "41_GREEN_AREA":        (3,    9),
+    "80_GRID_100M":         (8,    9),
 }
+# Layers created but deliberately not printed with the drawing.
+FROZEN_LAYERS = {"31_ROAD_CENTRELINE", "80_GRID_100M"}
 # Context layers mirror the study-area layers 1:1.
 CTX_SUFFIX = "_CTX"
 DIM_COLOUR = 253
@@ -795,6 +799,7 @@ class Drawing:
     polylines: list = field(default_factory=list)   # (layer, pts, closed, inside)
     circles: list = field(default_factory=list)     # (layer, cx, cy, r, inside)
     hatches: list = field(default_factory=list)     # (layer, poly, scale, inside)
+    texts: list = field(default_factory=list)       # (layer, x, y, height, str)
 
     def add_poly(self, layer, pts, closed, inside):
         if len(pts) >= 2:
@@ -805,6 +810,9 @@ class Drawing:
 
     def add_hatch(self, layer, poly, scale, inside):
         self.hatches.append((layer, poly, scale, inside))
+
+    def add_text(self, layer, x, y, height, text):
+        self.texts.append((layer, float(x), float(y), float(height), str(text)))
 
 
 def _study_box():
@@ -1026,6 +1034,32 @@ def build_green_and_trees(dwg: Drawing, model: OsmModel, stats: dict) -> None:
         f"green outlines {n_green}, tree rows {len(model.tree_rows)}")
 
 
+def build_grid(dwg: Drawing, cell: float = 100.0) -> None:
+    """
+    The 100 m analysis grid over the study square, with each cell labelled.
+
+    The coverage report names sparse cells as A1..F6; without the grid in the
+    drawing there is no way to find A1 in CAD, so the report is unactionable.
+    The layer is frozen — it is a reading aid, not part of the site plan.
+    """
+    n = int(round((STUDY_MAX[0] - STUDY_MIN[0]) / cell))
+    for i in range(n + 1):
+        x = STUDY_MIN[0] + i * cell
+        y = STUDY_MIN[1] + i * cell
+        dwg.add_poly("80_GRID_100M", [(x, STUDY_MIN[1]), (x, STUDY_MAX[1])],
+                     False, True)
+        dwg.add_poly("80_GRID_100M", [(STUDY_MIN[0], y), (STUDY_MAX[0], y)],
+                     False, True)
+    for iy in range(n):
+        for ix in range(n):
+            dwg.add_text("80_GRID_100M",
+                         STUDY_MIN[0] + ix * cell + 4.0,
+                         STUDY_MIN[1] + iy * cell + 4.0,
+                         7.0, f"{chr(ord('A') + ix)}{iy + 1}")
+    log(f"  grid {n}x{n} cells of {cell:.0f} m, labelled A1-"
+        f"{chr(ord('A') + n - 1)}{n} (layer frozen)")
+
+
 def build_context_water(dwg: Drawing, model: OsmModel, stats: dict) -> None:
     """
     The traced 02_WATER polyline is authoritative but only covers the study
@@ -1091,6 +1125,30 @@ def _ensure_layer(doc, name: str, colour: int, weight: int, frozen=False):
     return lay
 
 
+def _assert_layers_defined(doc, dwg: Drawing) -> None:
+    """
+    Every layer an entity is written to must have a LAYER table entry.
+
+    DXF lets you reference a layer that was never defined — the entity lands on
+    an implicit layer with default colour and lineweight and no frozen flag, and
+    nothing errors. Both 35_WATERWAY and 80_GRID_100M shipped that way once,
+    because the edit adding them to LAYERS silently failed to apply and only the
+    entity count was checked. This turns that silence into a hard failure.
+    """
+    used = ({layer for layer, *_ in dwg.polylines}
+            | {c[0] for c in dwg.circles}
+            | {h[0] for h in dwg.hatches}
+            | {t[0] for t in dwg.texts})
+    missing = sorted(l for l in used if l not in doc.layers)
+    if missing:
+        raise PipelineError(
+            "These layers have entities but no LAYER table entry, so they "
+            "would inherit default colour and lineweight in CAD: "
+            + ", ".join(missing)
+            + ". Add them to LAYERS (context layers are derived automatically)."
+        )
+
+
 def write_dxf(out_path: Path, dwg: Drawing, base_dxf: Path | None,
               scale: float, insunits: int, dim_context: bool) -> dict:
     """
@@ -1123,12 +1181,14 @@ def write_dxf(out_path: Path, dwg: Drawing, base_dxf: Path | None,
 
     for name, (colour, weight) in LAYERS.items():
         _ensure_layer(doc, name, colour, weight,
-                      frozen=(name == "31_ROAD_CENTRELINE"))
+                      frozen=name in FROZEN_LAYERS)
         ctx = name + CTX_SUFFIX
         _ensure_layer(doc, ctx,
                       DIM_COLOUR if dim_context else colour,
                       DIM_WEIGHT if dim_context else weight,
-                      frozen=(name == "31_ROAD_CENTRELINE"))
+                      frozen=name in FROZEN_LAYERS)
+
+    _assert_layers_defined(doc, dwg)
 
     s = float(scale)
 
@@ -1140,6 +1200,10 @@ def write_dxf(out_path: Path, dwg: Drawing, base_dxf: Path | None,
                            dxfattribs={"layer": layer})
     for layer, cx, cy, r, _inside in dwg.circles:
         msp.add_circle((cx * s, cy * s), r * s, dxfattribs={"layer": layer})
+
+    for layer, tx, ty, th, txt in dwg.texts:
+        msp.add_text(txt, height=th * s,
+                     dxfattribs={"layer": layer}).set_placement((tx * s, ty * s))
 
     n_hatch = 0
     for layer, poly, hscale, _inside in dwg.hatches:
@@ -1174,7 +1238,8 @@ def write_dxf(out_path: Path, dwg: Drawing, base_dxf: Path | None,
         n_added += 1
 
     doc.saveas(str(out_path))
-    info["entities"] = len(dwg.polylines) + len(dwg.circles) + n_hatch + n_added
+    info["entities"] = (len(dwg.polylines) + len(dwg.circles)
+                        + len(dwg.texts) + n_hatch + n_added)
     info["hatches"] = n_hatch
     log(f"  wrote {out_path.name}  ({info['entities']} new entities, "
         f"{info['carried_entities']} carried)")
@@ -1227,7 +1292,7 @@ _PREVIEW_LW = {
     "34_PARKING": 0.22, "35_WATERWAY": 0.28, "40_TREES": 0.22,
     "41_GREEN_AREA": 0.22,
 }
-SKIP_IN_PREVIEW = {"31_ROAD_CENTRELINE"}
+SKIP_IN_PREVIEW = set(FROZEN_LAYERS)
 
 
 def _base_layer(layer: str) -> str:
@@ -1346,22 +1411,33 @@ def render_preview(out_path: Path, coll: dict, extent: str = "frame",
     log(f"  wrote {out_path.name}")
 
 
-def render_qa_overlay(out_path: Path, coll: dict, sat_path: Path) -> bool:
-    """Draw the DXF over the satellite at true scale — misalignment is obvious."""
+def render_qa_overlay(out_path: Path, coll: dict, sat_path: Path,
+                      extent: str = "frame") -> bool:
+    """
+    Draw the DXF over the satellite at true scale — misalignment is obvious.
+
+    The study-area variant matters more than the full frame for signing off a
+    registration: 600 m across a page resolves a 3 m error, 1479 m does not.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
 
     if not sat_path.exists():
-        log(f"  {sat_path.name} not present — QA overlay skipped")
+        log(f"  {sat_path.name} not present — {extent} QA overlay skipped")
         return False
 
+    if extent == "study":
+        x0, y0, x1, y1 = (STUDY_MIN[0], STUDY_MIN[1], STUDY_MAX[0], STUDY_MAX[1])
+        lw, cw = 0.75, 0.6
+    else:
+        x0, y0, x1, y1 = (FRAME_MIN[0], FRAME_MIN[1], FRAME_MAX[0], FRAME_MAX[1])
+        lw, cw = 0.45, 0.35
+
     img = plt.imread(str(sat_path))
-    fw, fh = frame_size()
-    fig, ax = plt.subplots(figsize=(18, 18 * fh / fw), dpi=170)
-    ax.imshow(img, extent=[FRAME_MIN[0], FRAME_MAX[0],
-                           FRAME_MIN[1], FRAME_MAX[1]], origin="upper")
+    fig, ax = plt.subplots(figsize=(18, 18 * (y1 - y0) / (x1 - x0)), dpi=170)
+    ax.imshow(img, extent=[x0, x1, y0, y1], origin="upper")
 
     segs, water = [], []
     for layer, s in coll["lines"].items():
@@ -1370,15 +1446,16 @@ def render_qa_overlay(out_path: Path, coll: dict, sat_path: Path) -> bool:
             continue
         (water if base in ("02_WATER", "03_WATERFRONT_EDGE")
          else segs).extend(s)
-    ax.add_collection(LineCollection(segs, colors="#00ff88", linewidths=0.45))
+    ax.add_collection(LineCollection(segs, colors="#00ff88", linewidths=lw))
     if water:
-        ax.add_collection(LineCollection(water, colors="#ffd400", linewidths=0.9))
+        ax.add_collection(LineCollection(water, colors="#ffd400",
+                                         linewidths=lw * 2))
     for _layer, cx, cy, r in coll["circles"]:
-        ax.add_patch(plt.Circle((cx, cy), r, fill=False, ec="#00ff88", lw=0.35))
+        ax.add_patch(plt.Circle((cx, cy), r, fill=False, ec="#00ff88", lw=cw))
     ax.add_patch(plt.Rectangle((STUDY_MIN[0], STUDY_MIN[1]), 600, 600,
                                fill=False, ec="red", lw=1.4))
-    ax.set_xlim(FRAME_MIN[0], FRAME_MAX[0])
-    ax.set_ylim(FRAME_MIN[1], FRAME_MAX[1])
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
     ax.set_aspect("equal")
     ax.axis("off")
     fig.savefig(out_path, bbox_inches="tight", pad_inches=0.05)
@@ -1400,17 +1477,32 @@ def coverage_grid(dwg: Drawing, cell: float = 100.0) -> dict:
     from shapely.geometry import Polygon, box
     from shapely.ops import unary_union
 
-    polys = []
+    from shapely.geometry import LineString
+    from shapely.strtree import STRtree
+
+    polys, roads = [], []
     for layer, pts, closed, _ in dwg.polylines:
         base = layer[:-len(CTX_SUFFIX)] if layer.endswith(CTX_SUFFIX) else layer
-        if base not in ("20_BUILDINGS_OSM", "21_BUILDINGS_MAJOR"):
-            continue
-        if not closed or len(pts) < 3:
-            continue
-        p = Polygon(pts)
-        if p.is_valid and p.area > 0:
-            polys.append(p)
+        if base in ("20_BUILDINGS_OSM", "21_BUILDINGS_MAJOR"):
+            if not closed or len(pts) < 3:
+                continue
+            p = Polygon(pts)
+            if p.is_valid and p.area > 0:
+                polys.append(p)
+        elif base in ("30_ROAD_EDGE", "32_FOOTWAY") and len(pts) >= 2:
+            seq = np.vstack([pts, pts[:1]]) if closed and len(pts) > 2 else pts
+            roads.append(LineString(seq))
     built = unary_union(polys) if polys else None
+    road_tree = STRtree(roads) if roads else None
+
+    def road_len(b) -> float:
+        """Road-edge length inside a cell."""
+        if road_tree is None:
+            return 0.0
+        total = 0.0
+        for i in road_tree.query(b):
+            total += roads[int(i)].intersection(b).length
+        return total
 
     def ratio(b) -> float:
         if built is None:
@@ -1420,18 +1512,25 @@ def coverage_grid(dwg: Drawing, cell: float = 100.0) -> dict:
         except Exception:                                   # noqa: BLE001
             return 0.0
 
-    study_cells = {}
+    study_cells, roadless = {}, []
     for iy in range(6):
         for ix in range(6):
             b = box(ix * cell, iy * cell, (ix + 1) * cell, (iy + 1) * cell)
-            study_cells[f"{chr(ord('A') + ix)}{iy + 1}"] = ratio(b)
+            name = f"{chr(ord('A') + ix)}{iy + 1}"
+            r = ratio(b)
+            study_cells[name] = r
+            # Buildings but no road edge: the block is mapped, the street
+            # serving it is not. That is the signature of a road missing from
+            # OSM rather than of an empty block.
+            if r > 0.03 and road_len(b) < 20.0:
+                roadless.append(name)
 
     ix0 = int(math.floor(FRAME_MIN[0] / cell))
     ix1 = int(math.ceil(FRAME_MAX[0] / cell))
     iy0 = int(math.floor(FRAME_MIN[1] / cell))
     iy1 = int(math.ceil(FRAME_MAX[1] / cell))
     study = _study_box()
-    ext_empty, ext_ratios = [], []
+    ext_empty, ext_ratios, ext_roadless = [], [], []
     for iy in range(iy0, iy1):
         for ix in range(ix0, ix1):
             b = box(ix * cell, iy * cell, (ix + 1) * cell, (iy + 1) * cell)
@@ -1443,6 +1542,8 @@ def coverage_grid(dwg: Drawing, cell: float = 100.0) -> dict:
             ext_ratios.append(r)
             if r < 0.005:
                 ext_empty.append((f"({ix * 100},{iy * 100})", r))
+            elif r > 0.03 and road_len(b) < 20.0:
+                ext_roadless.append(f"({ix * 100},{iy * 100})")
 
     total_built = ratio(_study_box())
     return {
@@ -1451,6 +1552,8 @@ def coverage_grid(dwg: Drawing, cell: float = 100.0) -> dict:
         "ext_cells_total": len(ext_ratios),
         "ext_cells_empty": ext_empty,
         "ext_mean_ratio": float(np.mean(ext_ratios)) if ext_ratios else 0.0,
+        "roadless_study_cells": roadless,
+        "roadless_ext_cells": ext_roadless,
     }
 
 
@@ -1569,8 +1672,27 @@ def write_report(path: Path, stats: dict, reg: dict, cov: dict,
     A(", ".join(f"`{c}`" for c in classes) if classes else "_none_")
     A("")
     A("Classes visible in the imagery but absent from this list are missing "
-      "from OSM and must be traced by hand. Candidate blocks to check: cells "
-      "carrying buildings but no road edge.")
+      "from OSM and must be traced by hand.")
+    A("")
+    A("### Blocks with buildings but no road edge")
+    A("")
+    A("A cell holding mapped footprints but no street serving them is the "
+      "signature of a road missing from OSM, not of an open block. These are "
+      "the cells to check against the imagery first.")
+    A("")
+    rl = cov.get("roadless_study_cells") or []
+    if rl:
+        A(f"- Inside the square ({len(rl)}): " +
+          ", ".join(f"**{c}**" for c in rl))
+    else:
+        A("- Inside the square: none — every built cell has road edge in it.")
+    rle = cov.get("roadless_ext_cells") or []
+    if rle:
+        A(f"- Context ring ({len(rle)}), by SW corner in local metres: "
+          + "`" + "`, `".join(rle[:30]) + "`"
+          + (f" … and {len(rle) - 30} more" if len(rle) > 30 else ""))
+    else:
+        A("- Context ring: none.")
     A("")
 
     if notes:
@@ -1650,6 +1772,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--workdir", default=".", type=Path)
     ap.add_argument("--base-dxf", default="PortLouis_StudyArea_BASE_metres.dxf")
     ap.add_argument("--satellite", default="satellite_FULLFRAME_1479x1038m.jpg")
+    ap.add_argument("--satellite-study",
+                    default="satellite_STUDYAREA_600x600m.jpg",
+                    help="600 x 600 m raster, for the study-area QA overlay — "
+                         "the one that actually resolves a few metres of "
+                         "registration error.")
     ap.add_argument("--stage", choices=("register", "all"), default="all",
                     help="`register` stops after the fit and writes the QA "
                          "overlay, so the registration can be signed off "
@@ -1673,6 +1800,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     wd.mkdir(parents=True, exist_ok=True)
     base_dxf = wd / args.base_dxf
     sat = wd / args.satellite
+    sat_study = wd / args.satellite_study
     notes: list[str] = []
 
     rule("1  Anchor and preliminary local frame")
@@ -1765,6 +1893,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     build_green_and_trees(dwg, model, stats)
     build_context_water(dwg, model, stats)
     build_waterways(dwg, model, stats)
+    build_grid(dwg)
 
     if args.stage == "register":
         rule("QA — registration only")
@@ -1773,10 +1902,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                   scale=1.0, insunits=6, dim_context=args.dim_context)
         coll = collect_from_dxf(tmp)
         render_qa_overlay(wd / "qa_overlay.png", coll, sat)
+        render_qa_overlay(wd / "qa_overlay_studyarea.png", coll, sat_study,
+                          "study")
         render_preview(wd / "preview_register.png", coll, "frame",
                        "registration check — not the final drawing")
         log("")
-        log("Registration stage complete. Check qa_overlay.png: the green "
+        log("Registration stage complete. Check qa_overlay_studyarea.png "
+            "first — at 600 m across it resolves a few metres of error, which "
+            "the full frame does not. The green "
             "linework should sit on the roofs and kerbs, and the yellow traced "
             "water on the harbour edge. Then rerun without --stage register.")
         return 0
@@ -1793,6 +1926,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     render_preview(wd / "preview.png", coll, "frame")
     render_preview(wd / "preview_studyarea.png", coll, "study")
     render_qa_overlay(wd / "qa_overlay.png", coll, sat)
+    render_qa_overlay(wd / "qa_overlay_studyarea.png", coll, sat_study, "study")
 
     cov = coverage_grid(dwg)
     if not args.per_class_dissolve:

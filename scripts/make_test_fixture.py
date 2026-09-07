@@ -240,7 +240,7 @@ def make_base_dxf(path: Path) -> None:
     doc.saveas(str(path))
 
 
-def make_dummy_satellite(path: Path) -> None:
+def make_dummy_satellite(path: Path, px: tuple = None) -> None:
     """
     Flat grey raster at the true frame pixel size. Only there to prove the QA
     overlay places the drawing at the right extent and aspect — it carries no
@@ -250,7 +250,7 @@ def make_dummy_satellite(path: Path) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    w, h = P.FRAME_PX
+    w, h = px or P.FRAME_PX
     img = np.full((h, w, 3), 110, dtype=np.uint8)
     img[::100, :, :] = 150            # 100 px rules, to spot a scale error
     img[:, ::100, :] = 150
@@ -272,11 +272,13 @@ def main() -> int:
     (out / "osm_raw.json").write_text(json.dumps(make_osm(frame)))
     make_base_dxf(out / "PortLouis_StudyArea_BASE_metres.dxf")
     make_dummy_satellite(out / "satellite_FULLFRAME_1479x1038m.jpg")
+    make_dummy_satellite(out / "satellite_STUDYAREA_600x600m.jpg", P.STUDY_PX)
 
     print(f"fixture written to {out}")
     print("  nominatim_anchor.json, osm_raw.json, "
           "PortLouis_StudyArea_BASE_metres.dxf, "
-          "satellite_FULLFRAME_1479x1038m.jpg")
+          "satellite_FULLFRAME_1479x1038m.jpg, "
+          "satellite_STUDYAREA_600x600m.jpg")
     return 0
 
 
