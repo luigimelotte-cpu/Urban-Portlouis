@@ -163,7 +163,8 @@ unmodified.
 `make_test_fixture.py` builds a synthetic `osm_raw.json`, base DXF and satellite
 raster — a clean 44° / 136° grid, block-filling footprints, a harbour polygon, open
 coastline, canals, multipolygon relations with courtyards, a self-intersecting
-footprint, rail and parking. It is **not** Port Louis; it exists so the pipeline
+footprint, a pedestrian area, a closed loop road, a `building:part`, rail and
+parking. It is **not** Port Louis; it exists so the pipeline
 can be exercised without network access. Because the fixture is authored in
 local metres and inverted to lon/lat through the same transform the pipeline
 derives, it doubles as a round-trip check.
@@ -173,8 +174,14 @@ python3 scripts/make_test_fixture.py --outdir /tmp/fixture
 python3 scripts/portlouis_site.py --workdir /tmp/fixture
 ```
 
+**Runtime.** Profiled against a densified fixture at realistic central-city
+volume — 9829 buildings parsed, 8352 drawn, 12694 polylines — the whole pipeline
+runs in **16 s** end to end, of which geometry is 3 s and the rest is DXF write
+and rendering. Overpass fetch time is on top of that and depends on the server.
+There is no scaling problem to design around.
+
 Verified: DXF is R2018 with `$INSUNITS` 6 / 4; the millimetre file is exactly
-×1000 on all 4083 vertices plus circle radii, text heights and hatch pattern
+×1000 on all 4106 vertices plus circle radii, text heights and hatch pattern
 scale; every layer carrying entities has a table entry; the study
 square measures 600.000000 m; carried layers survive into both files; layer
 colours, lineweights and the frozen centreline layer are correct; `--stage
@@ -182,7 +189,7 @@ register` writes no site DXF; a missing base DXF aborts with exit 2; a shape
 mismatch in `02_WATER` trips the rotation warning at 28°, reaches rms 147 m, and
 aborts before writing anything.
 
-Eight bugs were found this way and fixed:
+Ten bugs were found this way and fixed:
 
 - The millimetre file scaled only new geometry, leaving everything carried from
   the base DXF in metres — one file holding two unit systems. It is now produced
@@ -230,7 +237,18 @@ Eight bugs were found this way and fixed:
   the grid would have printed with the drawing. `write_dxf` now asserts that
   every layer an entity uses has a table entry, and fails loudly if not.
 
-The last four were invisible until the fixture was extended to include the
+- **`building:part` was drawn as a footprint.** It is Simple-3D-Buildings detail
+  subdividing an outline that is already mapped as `building`, so every part lies
+  inside a footprint the drawing already has — stacking duplicate outlines on the
+  same roof. It is now excluded from both the query and the parse.
+- **Pedestrian squares came out as donuts.** A closed `highway` way tagged
+  `area=yes` is a surface, not a centreline, but it was being buffered as one: a
+  40 m square became a 1.8 m ring around a void, 576 m² instead of 1600 m².
+  Highway areas now join the road dissolve directly as surfaces. A closed loop
+  road *without* `area=yes` is still buffered as a centreline — there is a
+  fixture case for that, so the fix cannot over-reach.
+
+The last six were invisible until the fixture was extended to include the
 things real OSM actually contains — relations, courtyards, open coastline ways
 and watercourses — and until the DXF was checked for layer *properties* rather
 than just entity counts.

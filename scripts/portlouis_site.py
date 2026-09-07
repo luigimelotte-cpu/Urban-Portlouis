@@ -195,7 +195,6 @@ def overpass_query(bbox: tuple[float, float, float, float]) -> str:
 (
   way["building"]{b};
   relation["building"]{b};
-  way["building:part"]{b};
   way["highway"]{b};
   way["railway"]{b};
   way["natural"="water"]{b};
@@ -579,6 +578,7 @@ def grid_bearing_check(road_lines_local: Iterable[np.ndarray]) -> dict:
 class OsmModel:
     buildings: list = field(default_factory=list)      # Polygon
     roads: list = field(default_factory=list)          # (LineString, cls, halfw)
+    road_areas: list = field(default_factory=list)     # (Polygon, cls)
     railways: list = field(default_factory=list)       # LineString
     trees: list = field(default_factory=list)          # (Point, radius)
     parking: list = field(default_factory=list)        # Polygon
@@ -735,7 +735,12 @@ def parse_osm(raw: dict, frame: LocalFrame, clip_bounds) -> OsmModel:
         if not line.intersects(clip):
             continue
 
-        if "building" in tags or "building:part" in tags:
+        if "building" in tags:
+            # building:part is deliberately excluded. It is Simple-3D-Buildings
+            # detail subdividing a footprint that is already mapped as
+            # `building`, so every part lies inside an outline the drawing
+            # already has. Including them stacks duplicate outlines on the same
+            # roof — clutter in a 2D line drawing, not information.
             p = as_poly()
             if p is not None:
                 m.buildings.append(p)
@@ -746,6 +751,16 @@ def parse_osm(raw: dict, frame: LocalFrame, clip_bounds) -> OsmModel:
             if cls in ("proposed", "construction", "raceway", "bus_stop"):
                 continue
             m.road_classes.add(cls)
+            if closed and tags.get("area") == "yes":
+                # A pedestrian square is a SURFACE, already the shape we want.
+                # Buffering its outline as if it were a centreline turns a
+                # 40 m square into a 1.8 m-wide ring around a void — the square
+                # reads as a donut. area=yes is the tag that distinguishes it
+                # from a road that merely happens to close into a loop.
+                ap = as_poly()
+                if ap is not None:
+                    m.road_areas.append((ap, cls))
+                    continue
             m.roads.append((line, cls, _tag_halfwidth(tags, cls)))
         elif "railway" in tags:
             if tags["railway"] in ("abandoned", "razed", "proposed", "level_crossing"):
@@ -779,7 +794,8 @@ def parse_osm(raw: dict, frame: LocalFrame, clip_bounds) -> OsmModel:
             if p is not None:
                 m.green.append(p)
 
-    log(f"  buildings {len(m.buildings)}   roads {len(m.roads)}   "
+    log(f"  buildings {len(m.buildings)}   roads {len(m.roads)} "
+        f"(+{len(m.road_areas)} areas)   "
         f"rail {len(m.railways)}   trees {len(m.trees)}")
     log(f"  parking {len(m.parking)}   green {len(m.green)}   "
         f"water {len(m.water)}   coastline {len(m.coastline)}   "
@@ -915,6 +931,13 @@ def build_roads(dwg: Drawing, model: OsmModel, stats: dict,
         (foot_bufs if cls in FOOTWAY_CLASSES else veh_bufs).append((cls, buf))
         centrelines.append(line)
 
+    # Highway areas join the same dissolve — they are already road surface, so
+    # they merge with the buffered centrelines that run into them.
+    for poly, cls in model.road_areas:
+        if not poly.is_empty:
+            (foot_bufs if cls in FOOTWAY_CLASSES
+             else veh_bufs).append((cls, poly))
+
     def dissolve_emit(items, layer_base: str) -> int:
         if not items:
             return 0
@@ -941,8 +964,10 @@ def build_roads(dwg: Drawing, model: OsmModel, stats: dict,
     stats["road_edge_polylines"] = n_edge
     stats["footway_polylines"] = n_foot
     stats["road_classes_present"] = sorted(model.road_classes)
+    stats["road_areas"] = len(model.road_areas)
     log(f"  road edges {n_edge}, footway edges {n_foot}, "
-        f"centrelines {len(centrelines)}")
+        f"centrelines {len(centrelines)}, "
+        f"highway areas {len(model.road_areas)}")
 
 
 def build_railway(dwg: Drawing, model: OsmModel, stats: dict) -> None:

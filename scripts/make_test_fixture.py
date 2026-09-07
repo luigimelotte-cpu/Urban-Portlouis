@@ -174,6 +174,17 @@ def make_osm(frame: P.LocalFrame) -> dict:
             {"waterway": "canal", "name": "Fixture canal"})
     add_way(np.array([[620.0, 40.0], [780.0, 220.0]]), {"waterway": "drain"})
 
+    # A pedestrian square: a SURFACE, tagged area=yes. Buffered as a centreline
+    # it would come out as a thin ring around a void.
+    add_way(ring(150, 150, 60, 60), {"highway": "pedestrian", "area": "yes",
+                                     "name": "Fixture square"})
+    # A service road that merely closes into a loop, with NO area=yes. This one
+    # must still be buffered as a centreline — guards against over-correcting.
+    add_way(ring(520, 150, 50, 40), {"highway": "service"})
+    # building:part over an existing building — must NOT be drawn again.
+    add_way(ring(260, 560, 60, 40), {"building": "yes", "name": "Parent block"})
+    add_way(ring(260, 560, 25, 18), {"building:part": "yes", "height": "12"})
+
     # Self-intersecting bow-tie footprint, to exercise make_valid.
     add_way(np.array([[300.0, 80.0], [340.0, 120.0], [300.0, 120.0],
                       [340.0, 80.0], [300.0, 80.0]]), {"building": "yes"})
