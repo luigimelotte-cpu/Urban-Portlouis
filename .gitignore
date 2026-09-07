@@ -14,3 +14,7 @@ coverage_report.md
 
 __pycache__/
 *.pyc
+
+# Deliverables from scripts/site_plan.py are committed under outputs/
+!outputs/preview.png
+build/

@@ -1,0 +1,43 @@
+{
+  "type": "FeatureCollection",
+  "name": "Port Louis cadrage",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "CADRAGE",
+        "side_m": 600.0,
+        "note": "600 x 600 m study square, SW corner at local (0,0), +Y true north",
+        "absolute_accuracy_m": 30.0,
+        "anchor": "Aapravasi Ghat, Port Louis"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              57.5006359,
+              -20.1628203
+            ],
+            [
+              57.5063753,
+              -20.1628203
+            ],
+            [
+              57.5063752,
+              -20.1574006
+            ],
+            [
+              57.5006359,
+              -20.1574006
+            ],
+            [
+              57.5006359,
+              -20.1628203
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

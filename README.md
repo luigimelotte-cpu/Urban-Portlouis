@@ -9,29 +9,171 @@ satellite frame, 1478.65 × 1038.21 m**, so the block structure reads continuous
 past the boundary instead of stopping at it.
 
 ```
-scripts/portlouis_site.py      the pipeline — one file, top to bottom
-scripts/make_test_fixture.py   synthetic fixture, for running it offline
+scripts/site_plan.py           standalone site plan — anchors to DXF, no inputs needed
+scripts/portlouis_site.py      the full-frame pipeline — needs the base DXF + rasters
+scripts/make_test_fixture.py   synthetic fixture, for running either offline
 ```
+
+Two pipelines, different jobs. `site_plan.py` reconstructs the cadrage from
+geocoded anchors and needs nothing but network; `portlouis_site.py` extends the
+established drawing to the full satellite frame and needs the base DXF and the
+two rasters. See [site_plan.py](#site_planpy--standalone-site-plan) below.
+
+---
+
+## `site_plan.py` — standalone site plan
+
+Builds `site_plan.dxf` + `preview.png` for the 600 x 600 m cadrage from nothing
+but two geocoded anchors and OpenStreetMap. No base DXF, no rasters — so it runs
+anywhere the OSM hosts are reachable.
+
+```bash
+pip install ezdxf shapely pyproj matplotlib numpy requests
+python3 scripts/site_plan.py --workdir build
+```
+
+### Reconstructing the cadrage
+
+The red boundary in the reference satellite image is the 600 x 600 m study
+square already established for this project. Two independent facts fix it:
+
+- **Position.** Aapravasi Ghat sits at local (253, 466) inside the square. Le
+  Grenier / the Caudan basin then falls ~229 m outside the west edge, bearing
+  236 deg and 579 m from the Ghat — which is where the basin and its boats
+  appear in the image.
+- **Scale.** The square's side is 1.50 x the image's 400 m scale bar. On the
+  established 1316 x 924 px raster at 1.1236 m/px that is 534 px against the
+  bar's 356 px — the same 1.50, and 0.406 of the frame width, which is where
+  the red boundary sits.
+
+The script prints both checks and aborts if the arrangement one fails.
+
+**Accuracy.** Absolute georeferencing is +/- ~30 m, set entirely by the anchor:
+both published coordinates are quoted to whole arcseconds. Everything internal —
+the 600.000 m side, OSM geometry, relative positions — is unaffected by that
+offset. `--geocode` resolves the anchors live through Nominatim instead, which
+tightens it, and needs network.
+
+### Coordinate system
+
+| | |
+|---|---|
+| Units | metres (`$INSUNITS` = 6) |
+| Origin (0,0) | cadrage SW corner — coordinates stay in 0..600 |
+| +Y | true north |
+| Projection | UTM zone 40S, EPSG:32740 |
+| Origin in UTM | E 552315.58, N 7770422.05 |
+
+Grid convergence (+0.17333 deg) and point scale (0.99963416) are **measured, not
+looked up**: the script projects the anchor and a point 1000 m due true north of
+it and reads both off the resulting vector, so there is no sign convention to
+get wrong. The origin is written into the DXF as a `GEODATA` object and as
+header custom vars, so the drawing lands correctly in CAD and GIS.
+
+### Layers
+
+| Layer | Colour | Weight | Content |
+|---|---|---|---|
+| `BUILDINGS` | 7 | 0.25 mm | closed footprint per building |
+| `STREETS` | 7 | 0.13 mm | road edges from dissolved centreline buffers |
+| `WATER` | 5 | 0.18 mm | coastline, harbour, watercourses |
+| `PARKING` | 253 | 0.09 mm | boundary + ANSI31 hatch |
+| `TREES` | 3 | 0.09 mm | circle per tree, canopy-sized |
+| `CADRAGE` | 1 | 0.35 mm | the boundary, drawn last so it sits on top |
+
+### Flags
+
+| Flag | Effect |
+|---|---|
+| `--geocode` | resolve anchors live via Nominatim instead of the published table |
+| `--osm-json FILE` | replay a previously fetched Overpass response |
+| `--refresh` | ignore `osm_raw.json` and re-query |
+| `--cadrage-only` | skip OSM; emit the georeferenced frame alone |
+| `--centrelines` | draw streets as centrelines instead of road edges |
+| `--water-hatch` | solid-fill closed water bodies |
+| `--buffer M` | context beyond the cadrage, default 150 m |
+
+### Outputs
+
+`site_plan.dxf` (R2018, metres) · `preview.png` · `cadrage.json` ·
+`cadrage.geojson` — the last is WGS84, so dropping it on the satellite imagery
+in Google Earth or QGIS checks the boundary against the picture directly.
+
+### Notes on the drawing
+
+**Streets are drawn as edges, not centrelines.** OSM gives centrelines; the
+established drawing language is double lines. Buffers dissolve into one union
+before the boundary is taken — dissolving per class would rule a line straight
+across every junction between two classes. `--centrelines` switches it.
+
+**Relations are queried alongside ways.** The brief lists only `way[...]`, but
+real Port Louis has multipolygon buildings and water bodies, and dropping them
+loses whole footprints.
+
+**Nothing is invented.** If Overpass fails the script aborts rather than
+substituting a fallback; if there are no `natural=tree` nodes the TREES layer
+stays empty rather than being scattered with plausible-looking circles.
+
+### Verified
+
+Against the synthetic fixture, end to end: R2018 / `$INSUNITS` 6; all six layers
+declared with the correct colour, lineweight and linetype; no entity on an
+undeclared layer; the cadrage exactly 600.000000 x 600.000000 m with its SW
+corner on the origin and drawn last; every building closed; one ANSI31 hatch per
+parking boundary; tree radii in range; `GEODATA` attached. Three bugs were found
+and fixed that way:
+
+- **Two-node ways were dropped.** Way geometry was required to have three
+  points, which silently discarded every single-segment road — real service
+  roads, links and bridge segments. On the fixture that was all 59 highways;
+  the only surviving "street" was a pedestrian square.
+- **The drop counter conflated two different facts.** Footprints falling outside
+  the queried extent were counted as "below the minimum area", reporting 1913
+  discarded slivers where there were 12. Rejection reasons are now counted
+  separately, and the fixture's 12 deliberate sub-15 m2 slivers come back as
+  exactly 12.
+- **The preview quietly re-scaled itself.** The scale bar and north arrow were
+  drawn after the axis limits were set, and both re-triggered autoscaling, so
+  the rendered extent was not the one the code asked for.
+
+The preview is rendered by reading the written DXF back, not from the in-memory
+geometry, so a fault in the write path cannot hide behind it. Every render
+carries its data provenance under the title — a fixture or replayed run says so
+on its face and cannot be mistaken for the real thing.
 
 ---
 
 ## Status — read this first
 
-The script is complete and tested, but **it has not been run against real
-OpenStreetMap data**, because this environment could not do so:
+Neither pipeline has been run against **real OpenStreetMap data**, because this
+environment cannot reach it. Every OSM host — `overpass-api.de`,
+`overpass.kumi.systems`, `overpass.private.coffee`, `overpass.osm.ch`,
+`nominatim.openstreetmap.org`, `api.openstreetmap.org` — is refused at the
+CONNECT by the egress policy (HTTP 403), on the container's own network and
+through the sandboxed fetch tool alike. `wikidata.org` and `whc.unesco.org` are
+refused the same way, which is why the anchors come from a published table
+rather than a live lookup.
 
-| | |
-|---|---|
-| Network | Every OSM host — `overpass-api.de`, `overpass.kumi.systems`, `api.openstreetmap.org`, `nominatim.openstreetmap.org`, `photon.komoot.io` — is refused at the CONNECT by the egress policy (HTTP 403). |
-| Input files | `PortLouis_StudyArea_BASE_metres.dxf`, `satellite_FULLFRAME_1479x1038m.jpg` and `satellite_STUDYAREA_600x600m.jpg` are not in the repository. |
+| Script | Needs | State |
+|---|---|---|
+| `site_plan.py` | network only | **Runs.** Produces a real, correctly georeferenced `site_plan.dxf` + `preview.png` — but with `CADRAGE` alone, since the OSM layers have no data to draw. Every layer path is verified against the fixture. |
+| `portlouis_site.py` | network + the base DXF + two rasters | Not runnable here: the input files are also absent. Verified against the fixture only. |
 
-So there are no real outputs here — no DXF, no `preview.png`, no
-`coverage_report.md`. Run it on a machine with the three input files and normal
-internet and it will produce all of them.
+`PortLouis_StudyArea_BASE_metres.dxf`, `satellite_FULLFRAME_1479x1038m.jpg` and
+`satellite_STUDYAREA_600x600m.jpg` are not in the repository.
 
-What *has* been verified is in [Testing](#testing): the whole pipeline runs end
-to end against synthetic geometry, and four real bugs were found and fixed that
-way.
+To fill the drawing, run either script from a network that permits the OSM
+hosts, or fetch the Overpass JSON elsewhere and replay it:
+
+```bash
+python3 scripts/site_plan.py --workdir build                      # fetches
+python3 scripts/site_plan.py --workdir build --osm-json osm.json  # replays
+```
+
+What *has* been verified is in [Verified](#verified) and [Testing](#testing):
+both pipelines run end to end against synthetic geometry, and the bugs that
+surfaced that way are listed there.
+
 
 ---
 

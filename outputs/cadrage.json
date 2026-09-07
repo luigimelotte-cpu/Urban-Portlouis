@@ -1,0 +1,85 @@
+{
+  "crs_local": {
+    "units": "metres",
+    "origin": "cadrage SW corner",
+    "y_axis": "true north",
+    "utm_crs": "EPSG:32740",
+    "origin_utm": [
+      552315.5824,
+      7770422.0451
+    ],
+    "convergence_deg": 0.17333,
+    "point_scale": 0.999634157
+  },
+  "anchor": {
+    "name": "Aapravasi Ghat, Port Louis",
+    "lat": -20.158611,
+    "lon": 57.503056,
+    "local": [
+      253.0,
+      466.0
+    ],
+    "precision_m": 30.0,
+    "source": "Wikipedia / Wikidata Q9276, UNESCO WHS 1227 (whole arcseconds)"
+  },
+  "cadrage": {
+    "side_m": 600.0,
+    "corners": {
+      "SW": {
+        "lat": -20.1628203,
+        "lon": 57.5006359,
+        "easting": 552315.58,
+        "northing": 7770422.05
+      },
+      "SE": {
+        "lat": -20.1628203,
+        "lon": 57.5063753,
+        "easting": 552915.36,
+        "northing": 7770420.23
+      },
+      "NE": {
+        "lat": -20.1574006,
+        "lon": 57.5063752,
+        "easting": 552917.17,
+        "northing": 7771020.01
+      },
+      "NW": {
+        "lat": -20.1574006,
+        "lon": 57.5006359,
+        "easting": 552317.4,
+        "northing": 7771021.82
+      }
+    },
+    "ring_lonlat": [
+      [
+        57.5006359,
+        -20.1628203
+      ],
+      [
+        57.5063753,
+        -20.1628203
+      ],
+      [
+        57.5063752,
+        -20.1574006
+      ],
+      [
+        57.5006359,
+        -20.1574006
+      ],
+      [
+        57.5006359,
+        -20.1628203
+      ]
+    ]
+  },
+  "checks": [
+    {
+      "name": "anchor_arrangement",
+      "ok": true,
+      "separation_m": 578.5,
+      "bearing_deg": 236.4,
+      "west_of_edge_m": 228.7
+    }
+  ]
+}
