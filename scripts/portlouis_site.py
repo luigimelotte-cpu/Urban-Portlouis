@@ -69,6 +69,7 @@ UTM_EPSG = "EPSG:32740"                    # UTM 40S — correct for Mauritius
 WGS84 = "EPSG:4326"
 
 REG_RMS_ABORT = 8.0                        # m — abort above this
+REG_GATE = 50.0                            # m — max ICP correspondence distance
 OSM_MARGIN = 1400.0                        # m of OSM beyond the frame
 
 # Road half-widths (m) by highway class
@@ -370,7 +371,8 @@ def register_to_water(osm_coast_utm: np.ndarray,
                       initial: LocalFrame,
                       trim: float = 0.10,
                       rounds: int = 4,
-                      fit_scale: bool = False) -> tuple[LocalFrame, dict]:
+                      fit_scale: bool = False,
+                      gate: float = REG_GATE) -> tuple[LocalFrame, dict]:
     """
     Trimmed least-squares fit of (theta, tx, ty) minimising the distance from
     transformed OSM coastline vertices to the traced DXF water polyline.
@@ -382,6 +384,16 @@ def register_to_water(osm_coast_utm: np.ndarray,
     on a 740 m span a 0.2 % scale error is 1.4 m of displacement at the far
     edge, bought for a few centimetres of apparent residual. `fit_scale=True`
     frees it anyway, for diagnosing a suspected scale problem in the base.
+
+    Correspondences are GATED before fitting: only OSM vertices already within
+    `gate` metres of the traced polyline under the initial geodetic transform
+    are used. Without that gate the fit is dragged by water that has no
+    counterpart in the target — the traced 02_WATER covers the study area's
+    harbour edge only, while OSM within the frame also carries open coastline
+    running past it, inland basins and other water. Those points can never be
+    matched by any transform, and trimming the worst 10 % does not remove them
+    when they are a third of the input. On the test fixture, ungated fitting
+    swung the rotation 14.5 degrees; gated, it recovers the true transform.
 
     Trimming happens between rounds rather than inside the residual function, so
     each individual solve stays smooth and converges cleanly.
@@ -396,6 +408,23 @@ def register_to_water(osm_coast_utm: np.ndarray,
             f"to register against."
         )
     tree = cKDTree(target)
+
+    # Gate correspondences against the initial (geodetic) transform, which is
+    # independently accurate to well under a metre.
+    d0, _ = tree.query(initial.to_local(osm_coast_utm))
+    gated = d0 <= gate
+    n_gate_drop = int((~gated).sum())
+    if gated.sum() < 50:
+        raise PipelineError(
+            f"Only {int(gated.sum())} of {len(d0)} OSM water vertices fall "
+            f"within {gate:.0f} m of the traced 02_WATER polyline. Either the "
+            f"traced water covers a different area than the OSM water in this "
+            f"frame, or the anchor is wrong. Refusing to fit on that."
+        )
+    if n_gate_drop:
+        log(f"  gated out {n_gate_drop}/{len(d0)} OSM vertices with no "
+            f"counterpart in 02_WATER (> {gate:.0f} m)")
+    osm_coast_utm = osm_coast_utm[gated]
     rel = osm_coast_utm - initial.origin_utm
 
     locked_scale = initial.scale
@@ -429,7 +458,8 @@ def register_to_water(osm_coast_utm: np.ndarray,
             d, _ = tree.query(transform(pv)[idx])
             return d
 
-        sol = least_squares(resid, p, method="lm", xtol=1e-12, ftol=1e-12)
+        sol = least_squares(resid, p, method="trf", loss="soft_l1",
+                            f_scale=3.0, xtol=1e-12, ftol=1e-12)
         p = sol.x
         d_all, _ = tree.query(transform(p))
         cut = float(np.quantile(d_all, 1.0 - trim))
@@ -452,6 +482,7 @@ def register_to_water(osm_coast_utm: np.ndarray,
         "p90": float(np.quantile(d, 0.90)),
         "n_points": int(len(d_all)),
         "n_kept": int(keep.sum()),
+        "n_gated_out": n_gate_drop,
         "scale": sc,
         "scale_fitted": bool(fit_scale),
         "rotation_deg": float(math.degrees(th)),
@@ -550,6 +581,7 @@ class OsmModel:
     green: list = field(default_factory=list)          # Polygon
     water: list = field(default_factory=list)          # Polygon
     coastline: list = field(default_factory=list)      # LineString
+    waterways: list = field(default_factory=list)      # LineString
     tree_rows: list = field(default_factory=list)      # LineString
     road_classes: set = field(default_factory=set)
 
@@ -578,7 +610,7 @@ def _tag_halfwidth(tags: dict, cls: str) -> float:
 def _rings_from_relation(el: dict, project) -> list:
     """Stitch an OSM multipolygon relation into shapely polygons."""
     from shapely.geometry import LineString, Polygon
-    from shapely.ops import linemerge, polygonize, unary_union
+    from shapely.ops import polygonize, unary_union
 
     def build(role: str):
         lines = []
@@ -592,8 +624,13 @@ def _rings_from_relation(el: dict, project) -> list:
                 lines.append(LineString(xy))
         if not lines:
             return []
-        merged = linemerge(unary_union(lines))
-        return [p for p in polygonize(merged) if p.is_valid and p.area > 0]
+        # unary_union nodes the members where they meet; polygonize then closes
+        # the rings. linemerge is deliberately not used here — it raises on a
+        # single already-closed ring, which is what most OSM building
+        # multipolygons actually are.
+        noded = unary_union(lines)
+        parts = list(noded.geoms) if hasattr(noded, "geoms") else [noded]
+        return [p for p in polygonize(parts) if p.is_valid and p.area > 0]
 
     outers = build("outer")
     inners = build("inner")
@@ -718,8 +755,13 @@ def parse_osm(raw: dict, frame: LocalFrame, clip_bounds) -> OsmModel:
                 m.water.append(p)
                 m.coastline.append(LineString(p.exterior.coords))
         elif "waterway" in tags:
+            if tags["waterway"] in ("dam", "weir", "lock_gate", "fuel"):
+                continue
             p = as_poly()
-            (m.water if p is not None else m.coastline).append(p or line)
+            if p is not None:
+                m.water.append(p)
+            else:
+                m.waterways.append(line)
         elif tags.get("amenity") == "parking":
             p = as_poly()
             if p is not None:
@@ -736,7 +778,8 @@ def parse_osm(raw: dict, frame: LocalFrame, clip_bounds) -> OsmModel:
     log(f"  buildings {len(m.buildings)}   roads {len(m.roads)}   "
         f"rail {len(m.railways)}   trees {len(m.trees)}")
     log(f"  parking {len(m.parking)}   green {len(m.green)}   "
-        f"water {len(m.water)}   coastline {len(m.coastline)}")
+        f"water {len(m.water)}   coastline {len(m.coastline)}   "
+        f"waterways {len(m.waterways)}")
     if n_skipped:
         log(f"  {n_skipped} building ways skipped (unclosed or degenerate)")
     return m
@@ -987,18 +1030,49 @@ def build_context_water(dwg: Drawing, model: OsmModel, stats: dict) -> None:
     """
     The traced 02_WATER polyline is authoritative but only covers the study
     area. Outside it there is no traced harbour edge, so OSM water is used —
-    on its own layer, so the two provenances stay distinguishable.
+    on 02_WATER_CTX, so the two provenances stay distinguishable.
+
+    Both sources of harbour edge are drawn: water POLYGONS (natural=water,
+    landuse=harbour) and open COASTLINE ways. OSM maps an open sea edge as
+    `natural=coastline`, not as a closed polygon, so a polygon-only reading
+    leaves the seaward side of a harbour blank — which here is most of the
+    north-west of the frame, the Caudan basin and the quays.
     """
+    from shapely.geometry import MultiLineString
     from shapely.ops import unary_union
 
-    if not model.water:
-        stats["context_water_polylines"] = 0
-        return
     study, frame = _study_box(), _frame_box()
-    merged = unary_union(model.water).difference(study).intersection(frame)
-    n = _emit_lines(dwg, merged, "02_WATER" + CTX_SUFFIX, False, closed=True)
+    n = 0
+
+    if model.water:
+        merged = unary_union(model.water).difference(study).intersection(frame)
+        n += _emit_lines(dwg, merged, "02_WATER" + CTX_SUFFIX, False,
+                         closed=True)
+    if model.coastline:
+        coast = MultiLineString(
+            [l for l in model.coastline if l.geom_type == "LineString"])
+        coast = coast.difference(study).intersection(frame)
+        n += _emit_lines(dwg, coast, "02_WATER" + CTX_SUFFIX, False)
+
     stats["context_water_polylines"] = n
-    log(f"  context water outlines {n} (OSM — outside the cadrage only)")
+    log(f"  context water + coastline outlines {n} "
+        f"(OSM — outside the cadrage only)")
+
+
+def build_waterways(dwg: Drawing, model: OsmModel, stats: dict) -> None:
+    """
+    Linear watercourses — canals, drains, rivers. Distinct content from the
+    traced harbour edge, so they get their own layer and are drawn on both
+    sides of the cadrage rather than being suppressed inside it.
+    """
+    study, frame = _study_box(), _frame_box()
+    n = 0
+    for line in model.waterways:
+        gin, gout = _split_inside_outside(line, study, frame)
+        n += _emit_lines(dwg, gin, "35_WATERWAY", True)
+        n += _emit_lines(dwg, gout, "35_WATERWAY" + CTX_SUFFIX, False)
+    stats["waterway_polylines"] = n
+    log(f"  waterways {n}")
 
 
 # ---------------------------------------------------------------------------
@@ -1150,7 +1224,8 @@ _PREVIEW_LW = {
     "12_AGWHP_CORE_VICINITY": 0.40,
     "21_BUILDINGS_MAJOR": 0.55, "20_BUILDINGS_OSM": 0.40,
     "30_ROAD_EDGE": 0.32, "32_FOOTWAY": 0.22, "33_RAILWAY": 0.22,
-    "34_PARKING": 0.22, "40_TREES": 0.22, "41_GREEN_AREA": 0.22,
+    "34_PARKING": 0.22, "35_WATERWAY": 0.28, "40_TREES": 0.22,
+    "41_GREEN_AREA": 0.22,
 }
 SKIP_IN_PREVIEW = {"31_ROAD_CENTRELINE"}
 
@@ -1398,7 +1473,9 @@ def write_report(path: Path, stats: dict, reg: dict, cov: dict,
         s = reg["stats"]
         A(f"- Fitted to traced `02_WATER`: **rms {s['rms']:.2f} m**, "
           f"median {s['median']:.2f} m, p90 {s['p90']:.2f} m "
-          f"({s['n_kept']}/{s['n_points']} points kept after 10 % trim)")
+          f"({s['n_kept']}/{s['n_points']} points kept after 10 % trim; "
+          f"{s.get('n_gated_out', 0)} gated out beforehand as having no "
+          f"counterpart in the traced water)")
         A(f"- Scale {'solved by the fit' if s.get('scale_fitted') else 'locked to the geodetic point scale factor'}"
           f" ({s['scale']:.8f}); rotation moved "
           f"{s.get('rotation_drift_deg', 0.0):.3f} deg from grid convergence")
@@ -1440,6 +1517,7 @@ def write_report(path: Path, stats: dict, reg: dict, cov: dict,
     A(f"| Footway-edge polylines | {stats.get('footway_polylines', 0)} |")
     A(f"| Parking outlines | {stats.get('parking_polylines', 0)} |")
     A(f"| Railway polylines | {stats.get('railway_polylines', 0)} |")
+    A(f"| Waterway polylines | {stats.get('waterway_polylines', 0)} |")
     A("")
     A("A built-coverage ratio well under ~35 % in a dense central-Port-Louis "
       "block usually means OSM is incomplete there, not that the block is "
@@ -1686,6 +1764,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     build_parking(dwg, model, stats)
     build_green_and_trees(dwg, model, stats)
     build_context_water(dwg, model, stats)
+    build_waterways(dwg, model, stats)
 
     if args.stage == "register":
         rule("QA — registration only")

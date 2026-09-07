@@ -134,6 +134,11 @@ Measured on the fixture: single union puts **0.0 %** of its edge length inside
 the road surface, per-class **6.2 %** — 10.9 km of line drawn over open
 pavement. `--per-class-dissolve` restores the literal behaviour.
 
+**`35_WATERWAY` is an added layer.** The brief's layer table has no home for
+linear watercourses, and folding them into `02_WATER` would contaminate a
+verified layer with OSM geometry. They get their own layer instead of being
+dropped.
+
 **`80_GRID_100M` is computed, not read.** The brief refers to it but it is not
 among the layers the base DXF is stated to contain. The coverage report builds a
 6 × 6 grid of 100 m cells on the local origin, labelled A1–F6, which will line
@@ -149,8 +154,9 @@ unmodified.
 ## Testing
 
 `make_test_fixture.py` builds a synthetic `osm_raw.json`, base DXF and satellite
-raster — a clean 44° / 136° grid, block-filling footprints, a harbour polygon,
-tree rows, rail and parking. It is **not** Port Louis; it exists so the pipeline
+raster — a clean 44° / 136° grid, block-filling footprints, a harbour polygon, open
+coastline, canals, multipolygon relations with courtyards, a self-intersecting
+footprint, rail and parking. It is **not** Port Louis; it exists so the pipeline
 can be exercised without network access. Because the fixture is authored in
 local metres and inverted to lon/lat through the same transform the pipeline
 derives, it doubles as a round-trip check.
@@ -168,7 +174,7 @@ register` writes no site DXF; a missing base DXF aborts with exit 2; a shape
 mismatch in `02_WATER` trips the rotation warning at 28°, reaches rms 147 m, and
 aborts before writing anything.
 
-Four bugs were found this way and fixed:
+Seven bugs were found this way and fixed:
 
 - The millimetre file scaled only new geometry, leaving everything carried from
   the base DXF in metres — one file holding two unit systems. It is now produced
@@ -185,6 +191,32 @@ Four bugs were found this way and fixed:
 - Previews were rendered from the in-memory geometry, so the carried layers never
   appeared and a fault in the DXF write path would have been invisible. They are
   now rendered by reading the written DXF back.
+- **Coastline and watercourses were collected and then dropped.** `m.coastline`
+  was populated at three points and consumed by nothing — registration reads the
+  raw payload separately. Since OSM tags an open sea edge as `natural=coastline`
+  rather than as a closed polygon, the harbour edge across the north-west of the
+  frame — the Caudan basin and the quays, precisely the exterior this work is
+  about — would have come out blank. Coastline now draws to `02_WATER_CTX`;
+  linear watercourses get their own `35_WATERWAY`.
+- **The registration fit was dragged by water it could never match.** The traced
+  `02_WATER` covers the study area's harbour edge only, while OSM inside the
+  frame also carries coastline running past it, inland basins and other water.
+  Those vertices have no counterpart under any transform, and trimming the worst
+  10 % does not remove them when they are a third of the input — the fit swung
+  the rotation 14.5°. Correspondences are now gated at 50 m against the initial
+  geodetic transform before fitting, with a robust soft-L1 loss; the same case
+  now recovers the true transform at 1.28 m rms, and the report states how many
+  vertices were gated out.
+- **Multipolygon relations crashed the run.** `linemerge` raises on a single
+  already-closed ring, which is what most OSM building multipolygons are, so the
+  first such relation in real Port Louis data would have aborted the pipeline
+  with a `ValueError`. Ring assembly now nodes with `unary_union` and closes with
+  `polygonize`, verified against all four shapes: one closed outer ring, an outer
+  split into open halves, outer-plus-inner courtyards, and disjoint outer rings.
+
+The last three were invisible until the fixture was extended to include the
+things real OSM actually contains — relations, courtyards, open coastline ways
+and watercourses. The first fixture had none of them.
 
 The registration fit, the Overpass client and the coverage report have **not**
 been exercised against real OSM data — only against the fixture.

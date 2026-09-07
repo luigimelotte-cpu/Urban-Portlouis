@@ -130,6 +130,54 @@ def make_osm(frame: P.LocalFrame) -> dict:
 
     add_way(harbour_polygon(), {"natural": "water", "name": "Port Louis harbour"})
 
+    def add_relation(outers, inners, tags):
+        nid[0] += 1
+        members = [{"type": "way", "ref": 900000 + i, "role": "outer",
+                    "geometry": to_ll(np.asarray(o, float))}
+                   for i, o in enumerate(outers)]
+        members += [{"type": "way", "ref": 950000 + i, "role": "inner",
+                     "geometry": to_ll(np.asarray(v, float))}
+                    for i, v in enumerate(inners)]
+        els.append({"type": "relation", "id": nid[0],
+                    "tags": {"type": "multipolygon", **tags},
+                    "members": members})
+
+    def ring(cx, cy, w, h):
+        r = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]], float)
+        r = np.vstack([r, r[:1]]) + np.array([cx, cy])
+        return r
+
+    # Courtyard building as a multipolygon relation: the spec requires inner
+    # rings to survive as separate closed polylines.
+    add_relation([ring(430, 250, 90, 70)], [ring(430, 250, 40, 30)],
+                 {"building": "yes", "name": "Courtyard block"})
+    # Relation split across two outer ways (stitched by linemerge/polygonize).
+    half_a = np.array([[80, 480], [200, 480], [200, 540]], float)
+    half_b = np.array([[200, 540], [80, 540], [80, 480]], float)
+    add_relation([half_a, half_b], [], {"building": "warehouse"})
+    add_relation([ring(900, 300, 160, 120)], [ring(900, 300, 50, 40)],
+                 {"leisure": "park", "name": "Relation park"})
+    add_relation([ring(-150, 250, 200, 160)], [],
+                 {"natural": "water", "name": "Relation basin"})
+    add_relation([ring(760, -60, 140, 90)], [], {"amenity": "parking"})
+
+    # Open coastline way — how OSM actually tags a sea edge. Previously this
+    # reached the model and was then dropped before any builder saw it.
+    coast = np.column_stack([
+        np.linspace(-300, 1150, 60),
+        820 + 90 * np.sin(np.linspace(0, 3.2, 60)),
+    ])
+    add_way(coast, {"natural": "coastline"})
+
+    # Linear watercourses.
+    add_way(np.array([[-200.0, 120.0], [180.0, 260.0], [560.0, 300.0]]),
+            {"waterway": "canal", "name": "Fixture canal"})
+    add_way(np.array([[620.0, 40.0], [780.0, 220.0]]), {"waterway": "drain"})
+
+    # Self-intersecting bow-tie footprint, to exercise make_valid.
+    add_way(np.array([[300.0, 80.0], [340.0, 120.0], [300.0, 120.0],
+                      [340.0, 80.0], [300.0, 80.0]]), {"building": "yes"})
+
     rail = np.array([[-260.0, 780.0], [420.0, 690.0], [1100.0, 560.0]])
     add_way(rail, {"railway": "rail"})
 
