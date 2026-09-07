@@ -1,0 +1,16 @@
+# Pipeline inputs (large binaries, supplied locally)
+*.jpg
+*.jpeg
+*.png
+PortLouis_StudyArea_BASE_metres.dxf
+
+# Pipeline outputs and caches — regenerate with scripts/portlouis_site.py
+PortLouis_SITE_metres.dxf
+PortLouis_SITE_millimetres.dxf
+qa_register.dxf
+osm_raw.json
+nominatim_anchor.json
+coverage_report.md
+
+__pycache__/
+*.pyc
