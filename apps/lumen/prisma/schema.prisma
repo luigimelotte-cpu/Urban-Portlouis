@@ -1,0 +1,242 @@
+// Lumen — data model
+//
+// Two strictly separated zones:
+//   PUBLIC  — Character (the shareable definition of a persona).
+//   PRIVATE — everything keyed by userId: conversations, messages, memories,
+//             relationship + emotional state. Nothing here is ever exposed
+//             through a public route, and nothing is copied into Character.
+//
+// Relationship, emotion and memory are scoped per (user, character), not per
+// conversation: starting a new conversation clears the chat window but the
+// character still remembers you. Each can be reset independently.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
+}
+
+enum ContentMode {
+  SAFE
+  MATURE
+  ADULT
+}
+
+enum ConversationStyle {
+  CHAT
+  ROLEPLAY
+  STORY
+}
+
+enum Visibility {
+  PUBLIC
+  UNLISTED
+  PRIVATE
+}
+
+enum MessageRole {
+  USER
+  CHARACTER
+  SYSTEM
+}
+
+enum MemoryKind {
+  EPISODIC
+  LONG_TERM
+}
+
+// ─── Users ──────────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  displayName   String?
+  createdAt     DateTime  @default(now())
+  // Age gate. birthYear is the minimum needed to prove 18+; full DOB is not kept.
+  birthYear     Int?
+  ageVerifiedAt DateTime?
+  // Explicit opt-in for ADULT mode, separate from age verification.
+  adultOptIn    Boolean   @default(false)
+  // UserSettings (see src/core/types.ts) — validated with zod on read.
+  settings      Json      @default("{}")
+
+  characters    Character[]          @relation("CreatedCharacters")
+  conversations Conversation[]
+  memories      Memory[]
+  relationships RelationshipState[]
+  emotions      EmotionalState[]
+}
+
+// ─── PUBLIC: character definitions ──────────────────────────────────────────
+
+model Character {
+  id             String      @id @default(cuid())
+  creatorId      String?
+  creator        User?       @relation("CreatedCharacters", fields: [creatorId], references: [id], onDelete: SetNull)
+  visibility     Visibility  @default(PRIVATE)
+  name           String
+  // Always >= 18 — enforced in zod, in the API and by a CHECK constraint in SQL.
+  age            Int
+  gender         String
+  tagline        String      @default("")
+  tags           String[]    @default([])
+  avatarUrl      String?
+  // Highest content mode this character may ever be played in.
+  maxContentMode ContentMode @default(MATURE)
+  // CharacterProfile (src/core/character/profile.ts): appearance, personality,
+  // background, styles, boundaries, scenario, goals, trait sliders, etc.
+  profile        Json
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  conversations Conversation[]
+  memories      Memory[]
+  relationships RelationshipState[]
+  emotions      EmotionalState[]
+
+  @@index([visibility, createdAt])
+}
+
+// ─── PRIVATE: per-user data ─────────────────────────────────────────────────
+
+model Conversation {
+  id          String            @id @default(cuid())
+  userId      String
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Primary character. Messages carry their own characterId so a future
+  // multi-character scene only needs a participants table, not a migration
+  // of existing rows.
+  characterId String
+  character   Character         @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  title       String?
+  style       ConversationStyle @default(ROLEPLAY)
+  contentMode ContentMode       @default(SAFE)
+  // Rolling summary of messages that fell out of the short-term window.
+  summary     String            @default("")
+  summarizedCount Int           @default(0)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  messages Message[]
+
+  @@index([userId, updatedAt])
+}
+
+model Message {
+  id             String      @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           MessageRole
+  characterId    String?
+  content        String
+  createdAt      DateTime    @default(now())
+  editedAt       DateTime?
+  // { providerId, model, mode, tokensIn, tokensOut, intent, notices[] }
+  meta           Json        @default("{}")
+
+  @@index([conversationId, createdAt])
+}
+
+model Memory {
+  id                 String     @id @default(cuid())
+  userId             String
+  user               User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  characterId        String
+  character          Character  @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  conversationId     String?
+  kind               MemoryKind
+  // first_meeting | argument | compliment | romantic | promise | shared_event |
+  // inside_joke | name | preference | interest | person | habit | fact | relationship
+  category           String
+  content            String
+  // Stable key for long-term facts ("user.name", "user.likes:jazz") — used for
+  // deduplication: a new fact with the same key updates instead of duplicating.
+  factKey            String?
+  importance         Float      // 0..1
+  emotion            String?
+  peopleInvolved     String[]   @default([])
+  // Partial RelationshipVars delta the event caused, e.g. { "trust": 4 }.
+  relationshipEffect Json       @default("{}")
+  embedding          Unsupported("vector(768)")?
+  // Incremented when the memory is recalled or re-mentioned (slows forgetting).
+  reinforcement      Int        @default(0)
+  lastAccessedAt     DateTime   @default(now())
+  timestamp          DateTime   @default(now())
+  createdAt          DateTime   @default(now())
+
+  @@index([userId, characterId, kind])
+  @@index([userId, characterId, factKey])
+}
+
+model RelationshipState {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  characterId String
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  trust       Float     @default(20)
+  affection   Float     @default(15)
+  attraction  Float     @default(10)
+  comfort     Float     @default(20)
+  attachment  Float     @default(5)
+  tension     Float     @default(10)
+  conflict    Float     @default(0)
+  stage       String    @default("STRANGER")
+  // Discrete events that gate stages: ["first_meeting","dating_agreed",…]
+  milestones  String[]  @default([])
+  turnCount   Int       @default(0)
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([userId, characterId])
+}
+
+model EmotionalState {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  characterId String
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  // Record<Emotion, number 0..1>
+  values      Json
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([userId, characterId])
+}
+
+// ─── Platform configuration (admin) ─────────────────────────────────────────
+
+model ProviderConfig {
+  id              String   @id @default(cuid())
+  label           String
+  // Adapter key in the provider registry: "anthropic" | "openai-compatible" | "mock"
+  adapter         String
+  model           String
+  baseUrl         String?
+  // NAME of the env var holding the key — the secret itself never hits the DB.
+  apiKeyEnv       String?
+  enabled         Boolean  @default(true)
+  // Lower = preferred.
+  priority        Int      @default(100)
+  // ModelCapabilities, declared by the operator to match the provider's own
+  // usage policy. The router never sends a mode the provider has not been
+  // declared to permit.
+  capabilities    Json
+  contextWindow   Int      @default(32000)
+  maxOutputTokens Int      @default(1024)
+  temperature     Float    @default(0.9)
+  // "chat" and/or "utility" (analysis, extraction, summaries, profile structuring)
+  roles           String[] @default(["chat"])
+  // Adapter-specific extras (e.g. { "effort": "medium" })
+  options         Json     @default("{}")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model AppSetting {
+  key   String @id
+  value Json
+}

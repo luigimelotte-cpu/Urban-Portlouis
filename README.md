@@ -255,3 +255,10 @@ than just entity counts.
 
 The registration fit, the Overpass client and the coverage report have **not**
 been exercised against real OSM data — only against the fixture.
+
+---
+
+## Also in this repository
+
+`apps/lumen/` — **Lumen**, an unrelated, self-contained Next.js app (AI character
+chat for adults, provider-agnostic). See [apps/lumen/README.md](apps/lumen/README.md).
