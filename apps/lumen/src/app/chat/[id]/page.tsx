@@ -18,7 +18,7 @@ export default async function ChatPage({ params }: { params: Promise<{ id: strin
     role: m.role,
     content: m.content,
     createdAt: m.createdAt.toISOString(),
-    meta: { kind: m.meta.kind },
+    meta: { kind: m.meta.kind, images: m.meta.images },
   }));
   return (
     <ChatView

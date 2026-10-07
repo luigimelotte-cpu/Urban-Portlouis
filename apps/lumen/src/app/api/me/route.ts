@@ -20,6 +20,7 @@ const Patch = z.object({
       preferredProviderId: z.string().nullable().optional(),
       defaultStyle: z.enum(CONVERSATION_STYLES).optional(),
       memoryEnabled: z.boolean().optional(),
+      imagesEnabled: z.boolean().optional(),
       requestedContentMode: z.enum(CONTENT_MODES).optional(),
     })
     .optional(),

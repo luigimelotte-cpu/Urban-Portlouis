@@ -4,8 +4,10 @@ import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { Avatar } from "@/components/Avatar";
 import { MemoryDrawer } from "./MemoryDrawer";
+import { hidePhotoTags } from "@/core/images/tags";
 
-export type Msg = { id: string; role: "user" | "character" | "system"; content: string; createdAt: string; meta?: { kind?: string; notices?: string[] } };
+export type MsgImage = { id?: string; caption: string; status: "pending" | "ready" | "failed"; error?: string };
+export type Msg = { id: string; role: "user" | "character" | "system"; content: string; createdAt: string; meta?: { kind?: string; notices?: string[]; images?: MsgImage[] } };
 type Mode = "SAFE" | "MATURE" | "ADULT";
 type Style = "CHAT" | "ROLEPLAY" | "STORY";
 
@@ -58,6 +60,7 @@ export function ChatView(props: ChatViewProps) {
   const [selected, setSelected] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<MsgImage | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const abort = useRef<AbortController | null>(null);
   const nudged = useRef(false);
@@ -138,6 +141,17 @@ export function ChatView(props: ChatViewProps) {
                 setMessages((m) => [...m, ev.message]);
                 if (ev.message.meta?.notices?.length) setNotices((n) => [...new Set([...n, ...ev.message.meta.notices])]);
                 break;
+              case "image":
+                setMessages((m) =>
+                  m.map((x) => {
+                    if (x.id !== ev.messageId) return x;
+                    const images = [...(x.meta?.images ?? [])];
+                    images[ev.index] = ev.image;
+                    return { ...x, meta: { ...x.meta, images } };
+                  }),
+                );
+                if (ev.image.status === "failed" && ev.image.error) setToast(ev.image.error);
+                break;
               case "state":
                 setStage(ev.relationship.stage);
                 setMood(ev.emotions);
@@ -171,6 +185,12 @@ export function ChatView(props: ChatViewProps) {
       .then((d) => d.emotions && setMood(d.emotions))
       .catch(() => undefined);
   }, [props.initialMessages.length, props.character.id, runTurn]);
+
+  function askForPhoto() {
+    if (busy) return;
+    const text = "Send me a photo? 📷";
+    runTurn({ kind: "send", text }, { id: `tmp-${Date.now()}`, role: "user", content: text, createdAt: new Date().toISOString() });
+  }
 
   function send() {
     const text = input.trim();
@@ -299,6 +319,7 @@ export function ChatView(props: ChatViewProps) {
             msg={m}
             selected={selected === m.id}
             onSelect={() => setSelected(selected === m.id ? null : m.id)}
+            onOpenImage={setViewer}
             actions={
               selected === m.id && !busy ? (
                 <div className={`mt-1 flex gap-3 text-[11px] text-ink-400 ${m.role === "user" ? "justify-end" : ""}`}>
@@ -325,7 +346,7 @@ export function ChatView(props: ChatViewProps) {
               </span>
             </div>
           ) : (
-            <MessageRow msg={{ id: "streaming", role: "character", content: streaming, createdAt: "" }} selected={false} onSelect={() => undefined} />
+            <MessageRow msg={{ id: "streaming", role: "character", content: hidePhotoTags(streaming), createdAt: "" }} selected={false} onSelect={() => undefined} />
           ))}
         {notices.length > 0 && (
           <div className="mx-auto max-w-[90%] space-y-1 py-1 text-center text-[11px] text-ink-400">
@@ -368,6 +389,9 @@ export function ChatView(props: ChatViewProps) {
           }}
           className="flex items-end gap-2 border-t border-ink-800 bg-ink-950 px-3 pb-[calc(0.6rem+env(safe-area-inset-bottom))] pt-2.5"
         >
+          <button type="button" onClick={askForPhoto} disabled={busy} className="mb-1 h-9 w-9 shrink-0 rounded-full border border-ink-700 text-ink-300 disabled:opacity-30" title="Ask for a photo" aria-label="Ask for a photo">
+            📷
+          </button>
           {style !== "CHAT" && (
             <button type="button" onClick={() => setInput((v) => `${v}${v && !v.endsWith(" ") ? " " : ""}**`)} className="mb-1 h-9 w-9 shrink-0 rounded-full border border-ink-700 text-ink-300" title="Action (*…*)">
               *
@@ -398,12 +422,31 @@ export function ChatView(props: ChatViewProps) {
         </form>
       )}
 
+      {viewer?.id && (
+        <div className="fade-in fixed inset-0 z-50 flex flex-col bg-ink-950/95 backdrop-blur" onClick={() => setViewer(null)} role="dialog" aria-label="Photo">
+          <div className="flex items-center justify-between px-4 py-3 text-sm">
+            <span className="text-ink-300">{props.character.name}</span>
+            <div className="flex gap-4">
+              <a href={`/api/images/${viewer.id}`} download onClick={(e) => e.stopPropagation()} className="text-amber-glow">
+                Save
+              </a>
+              <button onClick={() => setViewer(null)} className="text-ink-300">
+                Close
+              </button>
+            </div>
+          </div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={`/api/images/${viewer.id}`} alt={viewer.caption} className="min-h-0 flex-1 object-contain px-3" />
+          <p className="px-6 py-4 text-center text-sm italic text-ink-300">{viewer.caption}</p>
+        </div>
+      )}
+
       {drawer && <MemoryDrawer characterId={props.character.id} characterName={props.character.name} onClose={() => setDrawer(false)} onReset={(s) => s && setStage(s)} />}
     </div>
   );
 }
 
-function MessageRow({ msg, selected, onSelect, actions }: { msg: Msg; selected: boolean; onSelect: () => void; actions?: React.ReactNode }) {
+function MessageRow({ msg, selected, onSelect, actions, onOpenImage }: { msg: Msg; selected: boolean; onSelect: () => void; actions?: React.ReactNode; onOpenImage?: (img: MsgImage) => void }) {
   const isUser = msg.role === "user";
   const bubbles = msg.content.split(/\n\s*\|\|\s*\n|\s+\|\|\s+/).filter((b) => b.trim());
   const isRefusal = msg.meta?.kind === "refusal";
@@ -420,8 +463,27 @@ function MessageRow({ msg, selected, onSelect, actions }: { msg: Msg; selected: 
           <Rich text={b.trim()} user={isUser} />
         </div>
       ))}
+      {msg.meta?.images?.map((img, i) => <PhotoBubble key={img.id ?? i} img={img} onOpen={() => onOpenImage?.(img)} />)}
       {actions}
     </div>
+  );
+}
+
+/** A photo the character sent: developing → ready (tap to open) → or failed. */
+function PhotoBubble({ img, onOpen }: { img: MsgImage; onOpen: () => void }) {
+  if (img.status === "failed")
+    return <p className="mb-1 max-w-[85%] rounded-2xl border border-dashed border-ink-700 px-3.5 py-2 text-xs italic text-ink-400">📷 Photo didn&apos;t come through: {img.error ?? "try again"}</p>;
+  if (img.status === "pending" || !img.id)
+    return (
+      <div className="photo-pending mb-1 flex aspect-[4/5] w-56 max-w-[70%] items-end rounded-2xl rounded-bl-md p-3" aria-label="Photo developing">
+        <span className="text-[11px] text-ink-300">📷 developing…</span>
+      </div>
+    );
+  return (
+    <button onClick={onOpen} className="fade-in mb-1 w-56 max-w-[70%] overflow-hidden rounded-2xl rounded-bl-md ring-1 ring-ink-700" aria-label={`Open photo: ${img.caption}`}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={`/api/images/${img.id}`} alt={img.caption} className="block aspect-[4/5] w-full object-cover" loading="lazy" />
+    </button>
   );
 }
 

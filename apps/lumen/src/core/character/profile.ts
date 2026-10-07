@@ -50,6 +50,9 @@ export const CharacterProfileSchema = z.object({
   exampleLines: list(8, 300).default([]),
   openingMessage: shortText(1500).default(""),
   defaultStyle: z.enum(CONVERSATION_STYLES).default("ROLEPLAY"),
+  // Look of generated images. The seed keeps one character's photos consistent.
+  imageStyle: z.enum(["photoreal", "cinematic", "illustration"]).default("photoreal"),
+  imageSeed: z.number().int().min(0).max(2_147_483_647).optional(),
   traits: TraitsSchema.default(TraitsSchema.parse({})),
 });
 export type CharacterProfile = z.infer<typeof CharacterProfileSchema>;

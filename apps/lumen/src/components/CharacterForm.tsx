@@ -44,6 +44,7 @@ export const EMPTY_CHARACTER: CharacterInput = {
     exampleLines: [],
     openingMessage: "",
     defaultStyle: "ROLEPLAY",
+    imageStyle: "photoreal",
     traits: { initiative: 55, jealousy: 25, affection: 50, confidence: 55, playfulness: 55, romance: 45 },
   },
 };
@@ -56,7 +57,7 @@ export function CharacterForm({ initial, characterId }: { initial?: CharacterInp
   const [c, setC] = useState<CharacterInput>(initial ?? EMPTY_CHARACTER);
   const [description, setDescription] = useState("");
   const [advanced, setAdvanced] = useState(false);
-  const [busy, setBusy] = useState<"structure" | "save" | null>(null);
+  const [busy, setBusy] = useState<"structure" | "save" | "portrait" | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
 
@@ -72,6 +73,27 @@ export function CharacterForm({ initial, characterId }: { initial?: CharacterInp
     if (!res.ok) return setErrors([data.error ?? "Could not build a profile."]);
     setC({ ...data.input, avatarUrl: c.avatarUrl, visibility: c.visibility });
     setWarnings([...(data.warnings ?? []), data.source === "heuristic" ? "Built offline from keywords — review and refine the fields." : ""].filter(Boolean));
+  }
+
+  async function generatePortrait() {
+    setBusy("portrait");
+    setErrors([]);
+    const res = await fetch("/api/images/portrait", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        age: c.age,
+        gender: c.gender,
+        appearance: c.profile.appearance,
+        occupation: c.profile.occupation,
+        style: c.profile.imageStyle,
+        characterId: characterId ?? null,
+      }),
+    });
+    const data = await res.json();
+    setBusy(null);
+    if (!res.ok) return setErrors([data.error ?? "Could not generate a portrait.", ...(Array.isArray(data.details) ? data.details.map((d: { message?: string }) => d.message ?? "") : [])].filter(Boolean));
+    set("avatarUrl", data.url);
   }
 
   async function onAvatar(file: File | undefined) {
@@ -141,14 +163,33 @@ export function CharacterForm({ initial, characterId }: { initial?: CharacterInp
           </div>
         </div>
       </div>
-      <p className="-mt-3 text-[11px] text-ink-400">Tap the portrait to upload a picture. Characters must be 18 or older.</p>
+      <p className="-mt-3 text-[11px] text-ink-400">Tap the portrait to upload a picture, or generate one from the appearance below. Characters must be 18 or older.</p>
 
       <Field label="Tagline">
         <Input value={c.tagline} onChange={(e) => set("tagline", e.target.value)} placeholder="One line that makes people curious" maxLength={160} />
       </Field>
-      <Field label="Appearance">
+      <Field label="Appearance" hint="Also used for every picture of this character, so their look stays consistent.">
         <Textarea value={c.profile.appearance} onChange={(e) => setP("appearance", e.target.value)} />
       </Field>
+      <section className="space-y-3 rounded-2xl border border-ink-700 bg-ink-900 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-xs font-medium uppercase tracking-wider text-ink-300">Image style</span>
+          {c.avatarUrl?.startsWith("/api/images/") && <span className="text-[11px] text-amber-glow">Portrait generated</span>}
+        </div>
+        <Segmented
+          value={c.profile.imageStyle}
+          onChange={(v) => setP("imageStyle", v)}
+          options={[
+            { value: "photoreal", label: "Photo" },
+            { value: "cinematic", label: "Cinematic" },
+            { value: "illustration", label: "Illustration" },
+          ]}
+        />
+        <Button variant="ghost" onClick={generatePortrait} disabled={!!busy || c.profile.appearance.trim().length < 10} className="w-full">
+          {busy === "portrait" ? "Developing portrait…" : c.avatarUrl ? "Regenerate portrait" : "Generate portrait"}
+        </Button>
+        {c.profile.appearance.trim().length < 10 && <p className="text-[11px] text-ink-400">Describe their appearance first.</p>}
+      </section>
       <Field label="Personality">
         <Textarea value={c.profile.personality} onChange={(e) => setP("personality", e.target.value)} />
       </Field>

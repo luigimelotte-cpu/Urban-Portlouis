@@ -180,7 +180,7 @@ export default function AdminPage() {
         {draft && (
           <div className="space-y-3 rounded-2xl border border-amber-glow/30 bg-ink-900 p-4">
             <Field label="Adapter">
-              <Select value={draft.adapter} onChange={(v) => setDraft({ ...draft, adapter: v })} options={adapters.map((a) => ({ value: a.key, label: a.label }))} />
+              <Select value={draft.adapter} onChange={(v) => setDraft({ ...draft, adapter: v, roles: v.endsWith("images") ? ["image"] : ["chat"] })} options={adapters.map((a) => ({ value: a.key, label: a.label }))} />
             </Field>
             <Input placeholder="Label" value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.target.value })} />
             <Input placeholder="Model id" value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })} />
@@ -228,7 +228,7 @@ export default function AdminPage() {
               </label>
             </div>
             <div className="flex flex-wrap gap-3 text-xs">
-              {(["chat", "utility"] as const).map((r) => (
+              {(["chat", "utility", "image"] as const).map((r) => (
                 <label key={r} className="flex items-center gap-1.5 text-ink-300">
                   <input
                     type="checkbox"

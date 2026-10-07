@@ -1,4 +1,5 @@
 import { createProvider } from "@/core/providers/registry";
+import { createImageProvider, isImageAdapter } from "@/core/images/registry";
 import { prisma } from "@/server/db";
 import { json, requireAdmin, route } from "@/server/http";
 import { toDescriptor } from "@/server/providers";
@@ -12,6 +13,17 @@ export const POST = route<Ctx>(async (_req, { params }) => {
   const { id } = await params;
   const row = await prisma.providerConfig.findUnique({ where: { id } });
   if (!row) throw new HttpError(404, "Provider not found");
+  if (isImageAdapter(row.adapter)) {
+    const img = createImageProvider(toDescriptor(row));
+    if (!img.isAvailable()) return json({ ok: false, error: `Missing API key (env var ${row.apiKeyEnv ?? "?"})` });
+    const t0 = Date.now();
+    try {
+      const out = await img.generate({ prompt: "A ceramic coffee cup on a sunlit wooden café table, photograph", aspect: "square" });
+      return json({ ok: true, ms: Date.now() - t0, model: out.model, finishReason: "image", sample: `${out.mimeType}, ${Math.round(out.bytes.length / 1024)} KB` });
+    } catch (e) {
+      return json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
   const provider = createProvider(toDescriptor(row));
   if (!provider.isAvailable()) return json({ ok: false, error: `Missing API key (env var ${row.apiKeyEnv ?? "?"})` });
   const started = Date.now();

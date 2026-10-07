@@ -1,4 +1,4 @@
-import { describePlan, planTurn } from "../character/planner";
+import { describePlan, mulberry32, planTurn, type TurnPlan } from "../character/planner";
 import type { Character } from "../character/profile";
 import { REFUSAL_LINES, checkHardLimits, resolveConversationMode } from "../content/policy";
 import { appraise, baselineFromTraits, describeEmotions, dominantEmotions, updateEmotions } from "../emotion/engine";
@@ -30,8 +30,22 @@ import { NoCompatibleProviderError, routeProvider } from "../providers/router";
 import { ProviderError, type LLMMessage, type ModelProvider } from "../providers/types";
 import { initialRelationship, summarizeRelationship, updateRelationship, type RelationshipUpdate } from "../relationship/engine";
 import { postProcessReply } from "../style/postprocess";
-import type { ContentMode, EmotionVector, RelationshipState, UserContext } from "../types";
-import type { ChatStore, ConversationRecord, MemoryStore, MessageMeta, PlatformSettings, ProviderSource, StoredMessage } from "./ports";
+import { checkImagePrompt, NEGATIVE_PROMPT, photoPrompt, seedFor } from "../images/prompt";
+import { extractPhotoTags } from "../images/tags";
+import { ImageProviderError, type ImageProvider } from "../images/types";
+import { RELATIONSHIP_STAGES, type ContentMode, type EmotionVector, type RelationshipState, type UserContext } from "../types";
+import type {
+  ChatStore,
+  ConversationRecord,
+  ImageProviderSource,
+  ImageStore,
+  MemoryStore,
+  MessageImage,
+  MessageMeta,
+  PlatformSettings,
+  ProviderSource,
+  StoredMessage,
+} from "./ports";
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
@@ -52,6 +66,7 @@ export type PipelineEvent =
       removedMessageIds?: string[];
     }
   | { type: "delta"; text: string }
+  | { type: "image"; messageId: string; index: number; image: MessageImage }
   | { type: "message"; message: StoredMessage }
   | {
       type: "state";
@@ -68,8 +83,14 @@ export interface PipelineDeps {
   providers: ProviderSource;
   embedder: Embedder;
   settings: PlatformSettings;
+  /** Optional: photo generation. Without it characters simply can't send pictures. */
+  images?: { providers: ImageProviderSource; store: ImageStore; dailyLimit?: number };
   now?: () => Date;
 }
+
+export const DEFAULT_DAILY_IMAGE_LIMIT = 40;
+/** Minimum character turns between two photos the character sends on its own. */
+const SPONTANEOUS_PHOTO_GAP = 8;
 
 /** Recent messages loaded per turn — the model never gets the full log. */
 export const RECENT_WINDOW = 24;
@@ -196,9 +217,21 @@ export class ChatPipeline {
       hasMemories: recalled.length > 0,
       seed: hashSeed(`${conv.id}:${history.length}:${userText}:${req.kind}`),
     });
+    // Photos: who can send, and whether this turn invites one.
+    const imageRoute = user.settings.imagesEnabled !== false ? await this.routeImages(mode) : null;
+    const photo = photoDirective({
+      signals,
+      rel: relUpdate.state,
+      canSend: !!imageRoute,
+      plan,
+      history: prior,
+      initiative: traits.initiative,
+      seed: hashSeed(`${conv.id}:photo:${history.length}`),
+    });
     const turnText = [
       req.kind === "nudge" ? nudgeDirection(absenceHours) : "",
       describePlan(plan, conv.style),
+      photo.text,
     ]
       .filter(Boolean)
       .join("\n");
@@ -274,10 +307,14 @@ export class ChatPipeline {
         notices.push("Reply withheld by content policy.");
       }
     }
+    const tagged = extractPhotoTags(content);
+    const photos = kind !== "refusal" && photo.allowed && imageRoute ? tagged.photos : [];
+    content = tagged.text || (photos.length ? "📷" : content);
     if (!content) content = "…";
 
     const reply = await this.saveCharacterMessage(conv, character, content, {
       kind,
+      ...(photos.length ? { images: photos.map((caption) => ({ caption, status: "pending" as const })) } : {}),
       providerId: used.descriptor.id,
       model: used.descriptor.model,
       mode,
@@ -288,6 +325,16 @@ export class ChatPipeline {
       prompt: { included: prompt.included, dropped: prompt.dropped, compacted: prompt.compacted, droppedMessages: prompt.droppedMessages },
     });
     yield { type: "message", message: reply };
+
+    // ── Photos the character chose to send ─────────────────────────────────
+    if (photos.length && imageRoute) {
+      const images: MessageImage[] = [...(reply.meta.images ?? [])];
+      for (let i = 0; i < photos.length; i++) {
+        images[i] = await this.generatePhoto({ user, character, conv, messageId: reply.id, description: photos[i], route: imageRoute });
+        yield { type: "image", messageId: reply.id, index: i, image: images[i] };
+      }
+      await store.updateMessage(reply.id, { meta: { ...reply.meta, images } });
+    }
 
     // ── 11–14. Memories, emotion, relationship, summary ────────────────────
     let newMemoryIds: string[] = [];
@@ -378,6 +425,7 @@ export class ChatPipeline {
         const lastUser = [...msgs].reverse().find((m) => m.role === "user");
         if (!lastUser) return { error: { type: "error", code: "invalid", message: "Nothing to regenerate." } };
         const removed = await store.deleteMessagesFrom(conv.id, lastUser.id, false);
+        await this.deps.images?.store.removeForMessages(removed.map((m) => m.id));
         await rollback(lastUser);
         const userMessage = { ...lastUser, meta: { ...lastUser.meta, memoryIds: [] } };
         await store.updateMessage(lastUser.id, { meta: userMessage.meta });
@@ -391,6 +439,7 @@ export class ChatPipeline {
         if (!checkHardLimits(text).allowed)
           return { error: { type: "error", code: "blocked", message: "That message crosses a hard content limit." } };
         const removed = await store.deleteMessagesFrom(conv.id, target.id, false);
+        await this.deps.images?.store.removeForMessages(removed.map((m) => m.id));
         await rollback(target);
         const meta = { ...target.meta, memoryIds: [], stateBefore: target.meta.stateBefore ?? snapshot() };
         await store.updateMessage(target.id, { content: text, meta, edited: true });
@@ -531,6 +580,64 @@ export class ChatPipeline {
     if (ids.length) await this.deps.memory.remove(ids);
   }
 
+  /** Image providers allowed for this content mode (may lower the mode, never raise it). */
+  private async routeImages(mode: ContentMode): Promise<{ candidates: ImageProvider[]; mode: ContentMode } | null> {
+    if (!this.deps.images) return null;
+    try {
+      const all = await this.deps.images.providers.list();
+      return routeProvider({ mode, role: "image", providers: all, fallback: "downgrade" });
+    } catch {
+      return null;
+    }
+  }
+
+  async generatePhoto(a: {
+    user: UserContext;
+    character: Character;
+    conv: ConversationRecord;
+    messageId: string;
+    description: string;
+    route: { candidates: ImageProvider[]; mode: ContentMode };
+  }): Promise<MessageImage> {
+    const deps = this.deps.images!;
+    const fail = (error: string): MessageImage => ({ caption: a.description, status: "failed", error });
+    const since = new Date(this.now().getTime() - 86_400_000);
+    if ((await deps.store.countSince(a.user.id, since)) >= (deps.dailyLimit ?? DEFAULT_DAILY_IMAGE_LIMIT))
+      return fail("Daily photo limit reached. Try again tomorrow.");
+
+    const { prompt, kind, aspect } = photoPrompt(a.character, a.description, a.route.mode);
+    const check = checkImagePrompt(prompt, a.route.mode);
+    if (!check.allowed)
+      return fail(check.reason === "nudity_not_allowed" ? "That photo isn't allowed at this content level." : "That photo crosses a content limit.");
+
+    for (const provider of a.route.candidates) {
+      try {
+        const img = await provider.generate({ prompt, negativePrompt: NEGATIVE_PROMPT, aspect, seed: seedFor(a.character.id, a.character.profile.imageSeed) });
+        const id = await deps.store.save({
+          userId: a.user.id,
+          characterId: a.character.id,
+          conversationId: a.conv.id,
+          messageId: a.messageId,
+          kind,
+          caption: a.description,
+          prompt,
+          providerId: provider.descriptor.id,
+          model: img.model,
+          mimeType: img.mimeType,
+          bytes: img.bytes,
+          width: img.width,
+          height: img.height,
+        });
+        return { id, caption: a.description, status: "ready", kind };
+      } catch (e) {
+        // Transient errors fail over; a refusal from the provider is final.
+        if (e instanceof ImageProviderError && e.retryable && provider !== a.route.candidates[a.route.candidates.length - 1]) continue;
+        return fail(e instanceof ImageProviderError && !e.retryable ? "The image model declined this photo." : "Couldn't develop that photo. Try again in a moment.");
+      }
+    }
+    return fail("No image model available.");
+  }
+
   private async saveCharacterMessage(conv: ConversationRecord, character: Character, content: string, meta: MessageMeta) {
     return this.deps.store.addMessage(conv.id, { role: "character", content, characterId: character.id, meta });
   }
@@ -547,6 +654,37 @@ export class ChatPipeline {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+const PHOTO_HOW =
+  'To send it, put one line on its own: [photo: what the picture shows, e.g. "selfie at the studio window, coffee in hand, golden hour"]. Describe only what is visible, keep it within the content level, then react to sending it in a few words.';
+
+/** Decides whether this turn may include a photo, and tells the model how. */
+export function photoDirective(a: {
+  signals: TurnSignals;
+  rel: RelationshipState;
+  canSend: boolean;
+  plan: TurnPlan;
+  history: StoredMessage[];
+  initiative: number;
+  seed: number;
+}): { text: string; allowed: boolean } {
+  const asked = a.signals.intents.includes("photo_request");
+  const rank = RELATIONSHIP_STAGES.indexOf(a.rel.stage);
+  const willing = a.rel.comfort >= 25 || rank >= RELATIONSHIP_STAGES.indexOf("FRIEND");
+  if (asked && !a.canSend)
+    return { text: "They asked for a photo. You can't send pictures right now. Deflect naturally, in character, and don't pretend you sent one.", allowed: false };
+  if (asked && !willing)
+    return { text: "They asked for a photo. It's too early for that with them: tease or decline in character. No photo this time.", allowed: false };
+  if (asked) return { text: `They asked for a photo. If it fits who you are and your boundaries, send one. ${PHOTO_HOW}`, allowed: true };
+
+  if (!a.canSend || rank < RELATIONSHIP_STAGES.indexOf("ACQUAINTANCE") || !a.plan.takeInitiative) return { text: "", allowed: false };
+  const lastPhoto = [...a.history].reverse().findIndex((m) => m.role === "character" && (m.meta.images?.length ?? 0) > 0);
+  const charTurnsSince = (lastPhoto < 0 ? a.history : a.history.slice(a.history.length - lastPhoto)).filter((m) => m.role === "character").length;
+  if (charTurnsSince < SPONTANEOUS_PHOTO_GAP) return { text: "", allowed: false };
+  const chance = 0.12 + 0.25 * (a.initiative / 100);
+  if (mulberry32(a.seed)() >= chance) return { text: "", allowed: false };
+  return { text: `If it feels natural, you may send them a photo on your own this turn (something from your day, or of you). ${PHOTO_HOW}`, allowed: true };
+}
 
 function toLLMMessages(history: StoredMessage[], forNudge: boolean): LLMMessage[] {
   const msgs: LLMMessage[] = history

@@ -1,5 +1,6 @@
 import { highestSupportedMode } from "@/core/content/policy";
 import { adapterOptions, createProvider } from "@/core/providers/registry";
+import { createImageProvider, imageAdapterOptions, isImageAdapter } from "@/core/images/registry";
 import { prisma } from "@/server/db";
 import { body, json, requireAdmin, route } from "@/server/http";
 import { ProviderSchema } from "@/server/admin-schema";
@@ -11,11 +12,12 @@ export const GET = route(async () => {
   await ensureDefaultProviders();
   const rows = await prisma.providerConfig.findMany({ orderBy: { priority: "asc" } });
   return json({
-    adapters: adapterOptions(),
+    adapters: [...adapterOptions(), ...imageAdapterOptions()],
     providers: rows.map((r) => {
       let available = false;
       try {
-        available = createProvider(toDescriptor(r)).isAvailable();
+        const d = toDescriptor(r);
+        available = (isImageAdapter(r.adapter) ? createImageProvider(d) : createProvider(d)).isAvailable();
       } catch {
         available = false;
       }

@@ -17,6 +17,7 @@ export type Intent =
   | "affection"
   | "humor"
   | "roleplay_action"
+  | "photo_request"
   | "smalltalk";
 
 export interface TurnSignals {
@@ -51,6 +52,8 @@ const P = {
     /\b(i (really )?like you|i('m| am) (falling|into you)|i have feelings|i love you|i want you|kiss (you|me)|hold (your|my) hand|je t'aime|je te kiffe|tu me plais|j'ai des sentiments|je veux t'embrasser)\b|\*\s*(kisses|embrasse)/i,
   askOut:
     /\b(go out with me|(want|wanna) (to )?go on a date|be my date|date with me|have dinner with me|tu veux sortir avec moi|un rendez-vous|un date avec moi|dîner avec moi)\b/i,
+  photo:
+    /[📷📸]|\b(send (me )?(a |another )?(pic|photo|picture|selfie)|(pic|photo|selfie) (of you|please|pls|stp)|show me (you|yourself|what you|your face|where you are)|can i see (you|your)|envoie(-moi| moi)? (une |un )?(photo|selfie|image)|une photo de toi|montre(-moi| moi)? (toi|ta tête|où tu es|ce que tu))/iu,
   askRelationship:
     /\b(be my (girlfriend|boyfriend|partner)|be together|official(ly)?|exclusive|in a relationship|sois ma copine|sois mon copain|être ensemble|officiel)\b/i,
   affection: /[❤💕😍🥰]|\b(hug|câlin|i care about you|je tiens à toi|you mean (a lot|so much)|tu comptes)\b/iu,
@@ -74,6 +77,7 @@ export function detectSignals(text: string, opts: { absenceHours?: number } = {}
 
   if (hit(P.greeting)) intents.push("greeting");
   if (hit(P.goodbye)) intents.push("goodbye");
+  if (hit(P.photo)) intents.push("photo_request");
   if (hit(P.askRelationship)) intents.push("ask_relationship");
   if (hit(P.askOut)) intents.push("ask_out");
   if (hit(P.romanticAdvance)) intents.push("romantic_advance");
@@ -108,6 +112,7 @@ export function detectSignals(text: string, opts: { absenceHours?: number } = {}
     "insult",
     "ask_relationship",
     "ask_out",
+    "photo_request",
     "romantic_advance",
     "apology",
     "compliment",

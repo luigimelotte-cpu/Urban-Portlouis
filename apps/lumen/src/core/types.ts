@@ -66,6 +66,7 @@ export interface UserSettings {
   preferredProviderId?: string | null;
   defaultStyle: ConversationStyle;
   memoryEnabled: boolean;
+  imagesEnabled: boolean;
   requestedContentMode: ContentMode;
 }
 
@@ -73,6 +74,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   preferredProviderId: null,
   defaultStyle: "ROLEPLAY",
   memoryEnabled: true,
+  imagesEnabled: true,
   requestedContentMode: "SAFE",
 };
 

@@ -49,7 +49,11 @@ export class MockProvider extends BaseProvider {
       "Your turn. And don't dodge.",
       "I'm curious now. That's dangerous.",
     ]);
-    return `${action}${body}\n||\n${follow}\n\n(mock provider — configure a real model in /admin)`;
+    // When the turn direction allows a photo, "send" one like a real model would.
+    const photo = /\[photo: what the picture shows/.test(req.system)
+      ? `\n||\n[photo: ${pick(["candid selfie, half-smile, warm evening light", "mirror selfie, relaxed, soft window light", "selfie outdoors at golden hour, wind in the hair"])}]\n||\nThere. Happy?`
+      : "";
+    return `${action}${body}\n||\n${follow}${photo}\n\n(mock provider — configure a real model in /admin)`;
   }
 
   async generateResponse(req: GenerateRequest): Promise<GenerateResult> {

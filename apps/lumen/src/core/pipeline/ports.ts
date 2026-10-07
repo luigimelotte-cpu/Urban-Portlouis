@@ -1,5 +1,6 @@
 import type { Character } from "../character/profile";
 import type { MemoryCandidate, MemoryRecord } from "../memory/engine";
+import type { ImageKind, ImageProvider } from "../images/types";
 import type { ModelProvider } from "../providers/types";
 import type {
   ChatMessage,
@@ -36,7 +37,17 @@ export interface MessageMeta {
   /** Memories created by this turn (deleted on regenerate/edit). */
   memoryIds?: string[];
   kind?: "opening" | "nudge" | "refusal" | "reply";
+  /** Photos the character sent with this message. */
+  images?: MessageImage[];
   [k: string]: unknown;
+}
+
+export interface MessageImage {
+  id?: string;
+  caption: string;
+  status: "pending" | "ready" | "failed";
+  kind?: ImageKind;
+  error?: string;
 }
 
 export interface StoredMessage extends ChatMessage {
@@ -82,4 +93,28 @@ export interface ProviderSource {
 export interface PlatformSettings {
   contentCeiling(): Promise<ContentMode>;
   routingFallback(): Promise<"downgrade" | "refuse">;
+}
+
+export interface ImageStore {
+  save(img: {
+    userId: string;
+    characterId: string | null;
+    conversationId: string | null;
+    messageId: string | null;
+    kind: ImageKind;
+    caption: string;
+    prompt: string;
+    providerId: string;
+    model: string;
+    mimeType: string;
+    bytes: Uint8Array;
+    width?: number;
+    height?: number;
+  }): Promise<string>;
+  countSince(userId: string, since: Date): Promise<number>;
+  removeForMessages(messageIds: string[]): Promise<void>;
+}
+
+export interface ImageProviderSource {
+  list(): Promise<ImageProvider[]>;
 }

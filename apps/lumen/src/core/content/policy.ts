@@ -135,7 +135,7 @@ export function checkHardLimits(text: string): ModerationResult {
 
 // Youth-coded descriptors are rejected in a character's appearance/scenario
 // regardless of the stated age: an "18-year-old" written as a child is not ok.
-const YOUTH_CODED =
+export const YOUTH_CODED =
   /\b(child(?:like)?|kid|minor|underage|preteen|pre-teen|loli|lolita|shota|schoolgirl|schoolboy|middle school|elementary|junior high|little girl|little boy|looks? (?:like a )?(?:child|kid|\d{1,2} ?(?:yo|years? old))|prepubescent|flat-chested child)\b/i;
 const HIGH_SCHOOL = /\b(high school(?:er)?|lycée|lyceenne|lycéenne|collégienne|collège)\b/i;
 

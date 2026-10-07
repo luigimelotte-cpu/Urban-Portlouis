@@ -1,9 +1,11 @@
 import type { ProviderConfig } from "@prisma/client";
 import { NO_CAPABILITIES, minMode, type ModelCapabilities } from "@/core/content/policy";
 import { createProvider } from "@/core/providers/registry";
+import { createImageProvider, isImageAdapter } from "@/core/images/registry";
+import type { ImageProvider } from "@/core/images/types";
 import type { ModelProvider, ProviderDescriptor } from "@/core/providers/types";
 import { CONTENT_MODES, type ContentMode } from "@/core/types";
-import type { PlatformSettings, ProviderSource } from "@/core/pipeline/ports";
+import type { ImageProviderSource, PlatformSettings, ProviderSource } from "@/core/pipeline/ports";
 import { prisma } from "./db";
 
 export function toDescriptor(p: ProviderConfig): ProviderDescriptor {
@@ -96,17 +98,66 @@ function defaultProviders() {
   return rows;
 }
 
-export async function ensureDefaultProviders() {
-  const count = await prisma.providerConfig.count();
-  if (count > 0) return;
-  for (const row of defaultProviders()) {
-    await prisma.providerConfig.create({ data: { ...row, capabilities: row.capabilities as object, options: row.options as object } });
+/** Image providers. Same rule: conservative capabilities, operator raises them. */
+function defaultImageProviders() {
+  const rows: Omit<ProviderConfig, "id" | "createdAt" | "updatedAt">[] = [];
+  const base = { baseUrl: null, enabled: true, temperature: 0, contextWindow: 4000, maxOutputTokens: 0, roles: ["image"] };
+  if (process.env.OPENAI_API_KEY) {
+    rows.push({
+      ...base,
+      label: "OpenAI Images",
+      adapter: "openai-images",
+      model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-1",
+      apiKeyEnv: "OPENAI_API_KEY",
+      priority: 20,
+      capabilities: { romance: true, mature_language: true, suggestive_content: false, adult_content: false },
+      options: { quality: "medium" },
+    });
   }
+  if (process.env.IMAGE_API_BASE_URL && process.env.IMAGE_MODEL) {
+    rows.push({
+      ...base,
+      label: `Images: ${process.env.IMAGE_MODEL}`,
+      adapter: "openai-images",
+      model: process.env.IMAGE_MODEL,
+      baseUrl: process.env.IMAGE_API_BASE_URL,
+      apiKeyEnv: "IMAGE_API_KEY",
+      priority: 30,
+      capabilities: { romance: true, mature_language: false, suggestive_content: false, adult_content: false },
+      options: { sizeMode: "wh", responseFormat: "b64_json", sendSeed: true, sendNegative: true, sizes: { portrait: "768x1024", square: "1024x1024", landscape: "1024x768" } },
+    });
+  }
+  rows.push({
+    ...base,
+    label: "Mock images (offline dev)",
+    adapter: "mock-images",
+    model: "mock-images",
+    apiKeyEnv: null,
+    priority: 1000,
+    capabilities: { romance: true, mature_language: true, suggestive_content: true, adult_content: false },
+    options: {},
+  });
+  return rows;
+}
+
+export async function ensureDefaultProviders() {
+  const create = async (rows: ReturnType<typeof defaultProviders>) => {
+    for (const row of rows)
+      await prisma.providerConfig.create({ data: { ...row, capabilities: row.capabilities as object, options: row.options as object } });
+  };
+  const count = await prisma.providerConfig.count();
+  if (count === 0) {
+    await create([...defaultProviders(), ...defaultImageProviders()]);
+    return;
+  }
+  // Databases created before image support get image defaults once.
+  if (!(await prisma.providerConfig.count({ where: { roles: { has: "image" } } }))) await create(defaultImageProviders());
 }
 
 let cache: { at: number; providers: ModelProvider[] } | undefined;
 export function invalidateProviderCache() {
   cache = undefined;
+  imageCache = undefined;
 }
 
 export const dbProviderSource: ProviderSource = {
@@ -116,6 +167,7 @@ export const dbProviderSource: ProviderSource = {
     const rows = await prisma.providerConfig.findMany({ orderBy: { priority: "asc" } });
     const providers: ModelProvider[] = [];
     for (const r of rows) {
+      if (isImageAdapter(r.adapter)) continue;
       try {
         providers.push(createProvider(toDescriptor(r)));
       } catch {
@@ -123,6 +175,19 @@ export const dbProviderSource: ProviderSource = {
       }
     }
     cache = { at: Date.now(), providers };
+    return providers;
+  },
+};
+
+let imageCache: { at: number; providers: ImageProvider[] } | undefined;
+
+export const dbImageProviderSource: ImageProviderSource = {
+  async list() {
+    if (imageCache && Date.now() - imageCache.at < 5000) return imageCache.providers;
+    await ensureDefaultProviders();
+    const rows = await prisma.providerConfig.findMany({ where: { roles: { has: "image" } }, orderBy: { priority: "asc" } });
+    const providers = rows.filter((r) => isImageAdapter(r.adapter)).map((r) => createImageProvider(toDescriptor(r)));
+    imageCache = { at: Date.now(), providers };
     return providers;
   },
 };

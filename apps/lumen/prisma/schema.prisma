@@ -45,6 +45,12 @@ enum MessageRole {
   SYSTEM
 }
 
+enum ImageKind {
+  PORTRAIT
+  SELFIE
+  SCENE
+}
+
 enum MemoryKind {
   EPISODIC
   LONG_TERM
@@ -69,6 +75,7 @@ model User {
   memories      Memory[]
   relationships RelationshipState[]
   emotions      EmotionalState[]
+  images        Image[]
 }
 
 // ─── PUBLIC: character definitions ──────────────────────────────────────────
@@ -97,6 +104,7 @@ model Character {
   memories      Memory[]
   relationships RelationshipState[]
   emotions      EmotionalState[]
+  images        Image[]
 
   @@index([visibility, createdAt])
 }
@@ -207,12 +215,40 @@ model EmotionalState {
   @@unique([userId, characterId])
 }
 
+// Generated images. PORTRAITs of a public character are public; every other
+// image (selfies and scenes sent in a chat) is private to its user and is only
+// served to them. Bytes live in Postgres for v1 — move to object storage for
+// production (the API already serves images by id, so only this changes).
+model Image {
+  id             String     @id @default(cuid())
+  userId         String
+  user           User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  characterId    String?
+  character      Character? @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  conversationId String?
+  messageId      String?
+  kind           ImageKind
+  caption        String     @default("")
+  prompt         String
+  providerId     String?
+  model          String?
+  mimeType       String
+  data           Bytes
+  width          Int?
+  height         Int?
+  createdAt      DateTime   @default(now())
+
+  @@index([userId, characterId, createdAt])
+  @@index([messageId])
+}
+
 // ─── Platform configuration (admin) ─────────────────────────────────────────
 
 model ProviderConfig {
   id              String   @id @default(cuid())
   label           String
   // Adapter key in the provider registry: "anthropic" | "openai-compatible" | "mock"
+  // | "openai-images" | "mock-images"
   adapter         String
   model           String
   baseUrl         String?
@@ -228,7 +264,8 @@ model ProviderConfig {
   contextWindow   Int      @default(32000)
   maxOutputTokens Int      @default(1024)
   temperature     Float    @default(0.9)
-  // "chat" and/or "utility" (analysis, extraction, summaries, profile structuring)
+  // "chat", "utility" (analysis, extraction, summaries, profile structuring)
+  // and/or "image" (portraits and photos sent in chat)
   roles           String[] @default(["chat"])
   // Adapter-specific extras (e.g. { "effort": "medium" })
   options         Json     @default("{}")

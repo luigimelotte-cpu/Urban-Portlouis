@@ -29,7 +29,7 @@ OpenAI-compatible key, then restart, and a provider row is created
 automatically. You can also add providers by hand in `/admin`.
 
 ```bash
-npm test           # 63 unit + pipeline tests (no DB needed)
+npm test           # 81 unit + pipeline tests (no DB needed)
 npm run typecheck
 npm run build && npm start
 ```
@@ -141,6 +141,33 @@ playfulness, romance) affect every reply in four ways:
 4. **Relationship.** The romance trait affects how fast attraction grows and
    when the character is ready to say yes to a date.
 
+### Images: portraits and photos in chat
+
+- **Portraits.** The creator generates a portrait from the character's
+  *appearance* text, in one of three styles (photo, cinematic, illustration).
+  The appearance text is the character's **visual identity**: it is reused for
+  every later picture, together with a fixed seed per character, so the face
+  and look stay consistent. Names are never sent to the image model.
+- **Photos in the conversation.** Tap 📷, or just ask ("send me a pic",
+  "envoie-moi une photo"). The relationship engine decides whether the
+  character is willing; too early and they tease or decline in character.
+  With high initiative, a character will sometimes send a photo on their own,
+  at most once every 8 replies. The chat model "sends" a photo by writing
+  `[photo: …]`. The pipeline removes that line from the text, then checks and
+  generates the image, and streams it into the chat. The reply arrives first
+  and the photo shows as "developing…" until it is ready.
+- **Same safety model as text.** Image providers declare capabilities and are
+  routed by content mode. Every prompt carries an explicit adult anchor and a
+  negative prompt against childlike features, and gets a final check before
+  generation: hard limits, youth-coded words, and no nudity below ADULT. A
+  refusal from the image model is final: it is never retried on another
+  provider. Each user has a daily limit (`IMAGE_DAILY_LIMIT`).
+- **Privacy.** Photos sent in a chat are private to that user. They are served
+  only to their owner by `/api/images/:id` (404 for anyone else) and are
+  listed in the chat's memory panel under *Photos*. A portrait is visible to
+  others only once a non-private character uses it. Regenerating or deleting
+  a message also deletes its photos.
+
 ### Data separation
 
 - **Public:** `Character` holds only the definition.
@@ -172,6 +199,9 @@ playfulness, romance) affect every reply in four ways:
 | `EMBEDDING_PROVIDER` | no | `local` (offline hashing, default) or `openai` |
 | `EMBEDDING_MODEL`, `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY` | no | For `openai` embeddings (default `text-embedding-3-small`) |
 | `EMBEDDING_DIM` | no | Must match `vector(768)` in the migration |
+| `OPENAI_IMAGE_MODEL` | no | Image model for the auto-created OpenAI image provider (default `gpt-image-1`) |
+| `IMAGE_API_BASE_URL`, `IMAGE_MODEL`, `IMAGE_API_KEY` | no | Any other image server with the OpenAI Images API shape |
+| `IMAGE_DAILY_LIMIT` | no | Images per user per 24h (default 40) |
 | `CONTENT_MODE_CEILING` | no | Platform-wide ceiling: `SAFE` / `MATURE` / `ADULT` (default `MATURE`) |
 
 API keys never go in the database. A provider row stores only the **name** of
@@ -184,6 +214,8 @@ the environment variable that holds its key.
 | `anthropic` | Claude (default `claude-opus-5-5`) | Official SDK, streaming, `output_config.effort`, server-side refusal fallback on supported models, `refusal` handled |
 | `openai-compatible` | OpenAI, OpenRouter, Together, Groq, Mistral, DeepInfra, vLLM, Ollama, LM Studio… | Plain fetch + SSE, optional `/moderations`, `noAuth` for local servers, custom headers |
 | `mock` | Offline development | Template replies; never produces explicit content |
+| `openai-images` | OpenAI Images (`gpt-image-1`), Together, DeepInfra, self-hosted Flux/SDXL gateways | `size` or `width/height`, optional seed and negative prompt |
+| `mock-images` | Offline development | Draws an SVG placeholder |
 
 To add a vendor: write one file in `core/providers/adapters/` that extends
 `BaseProvider`, then add one line in `registry.ts`.
@@ -206,8 +238,12 @@ To add a vendor: write one file in `core/providers/adapters/` that extends
 - Rate limiting, abuse protection, per-user quotas and billing.
 - Background jobs (queue) for memory extraction, summarisation and
   forgetting, instead of running them inline at the end of the request.
-- Avatar storage in object storage or a CDN (currently a resized data URL in
-  Postgres).
+- Image storage in object storage or a CDN (currently bytes in Postgres,
+  served by id, so only the storage layer has to change).
+- Reference-image conditioning (image-to-image / IP-Adapter / LoRA per
+  character) for stronger face consistency than text plus seed.
+- An image moderation classifier on generated pictures, on top of the prompt
+  checks and the provider's own safety system.
 - Observability: token and cost tracking per provider, latency, error rates.
 - Prompt caching for providers that support it (the stable modules are
   already first in the system prompt).

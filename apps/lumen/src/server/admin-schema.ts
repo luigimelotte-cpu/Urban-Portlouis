@@ -16,8 +16,8 @@ export const ProviderSchema = z.object({
     adult_content: z.boolean(),
   }),
   contextWindow: z.number().int().min(2000).max(2_000_000).default(32000),
-  maxOutputTokens: z.number().int().min(64).max(64000).default(1024),
+  maxOutputTokens: z.number().int().min(0).max(64000).default(1024),
   temperature: z.number().min(0).max(2).default(0.9),
-  roles: z.array(z.enum(["chat", "utility"])).min(1).default(["chat"]),
+  roles: z.array(z.enum(["chat", "utility", "image"])).min(1).default(["chat"]),
   options: z.record(z.string(), z.unknown()).default({}),
 });

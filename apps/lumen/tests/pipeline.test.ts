@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { PipelineEvent } from "@/core/pipeline/chat-pipeline";
 import { ProviderError } from "@/core/providers/types";
-import { SpyProvider, collect, makeCharacter, setup } from "./helpers/in-memory";
+import { SpyImageProvider, SpyProvider, collect, makeCharacter, setup } from "./helpers/in-memory";
+import { ImageProviderError } from "@/core/images/types";
+import { initialRelationship } from "@/core/relationship/engine";
+import { DEFAULT_USER_SETTINGS } from "@/core/types";
 
 const MATURE = { mature_language: true, suggestive_content: true };
 const of = <T extends PipelineEvent["type"]>(events: PipelineEvent[], type: T) => events.filter((e) => e.type === type) as Extract<PipelineEvent, { type: T }>[];
@@ -152,5 +155,107 @@ describe("chat pipeline", () => {
     expect(store.conversations.get(conv.id)!.summary).toMatch(/message number/);
     const last = p.requests.filter((r) => !r.json).at(-1)!;
     expect(last.messages.length).toBeLessThanOrEqual(25);
+  });
+});
+
+describe("photos in chat", () => {
+  const friendly = { comfort: 40 };
+  const photoReply = () => "*grins*\n||\n[photo: selfie at the studio window, holding a coffee]\n||\nthere.";
+
+  it("generates the photo the character sends when asked, and stores it with the message", async () => {
+    const p = new SpyProvider(MATURE);
+    p.reply = photoReply;
+    const img = new SpyImageProvider();
+    const { pipeline, conv, user, store, images, character } = setup({ providers: [p], imageProviders: [img] });
+    await store.saveRelationship(user.id, character.id, { ...initialRelationship("ACQUAINTANCE"), ...friendly });
+    const events = await collect(pipeline.run({ kind: "send", userId: user.id, conversationId: conv.id, text: "send me a pic?" }));
+
+    const req = p.requests.find((r) => !r.json)!;
+    expect(req.system).toMatch(/\[photo: what the picture shows/);
+    const msg = of(events, "message")[0].message;
+    expect(msg.content).toBe("*grins*\n||\nthere.");
+    expect(msg.meta.images).toEqual([{ caption: "selfie at the studio window, holding a coffee", status: "pending" }]);
+    const imgEvent = of(events, "image")[0];
+    expect(imgEvent.image).toMatchObject({ status: "ready", kind: "SELFIE" });
+    expect(images.rows).toHaveLength(1);
+    expect(images.rows[0]).toMatchObject({ messageId: msg.id, characterId: character.id, kind: "SELFIE" });
+    expect(img.requests[0].prompt).toMatch(/clearly adult 27-year-old woman/);
+    expect(img.requests[0].prompt).toMatch(/fully clothed/); // conversation is SAFE
+    expect(store.messages.get(conv.id)!.at(-1)!.meta.images?.[0].status).toBe("ready");
+  });
+
+  it("declines in character when it's too early, and ignores any tag the model writes anyway", async () => {
+    const p = new SpyProvider(MATURE);
+    p.reply = photoReply;
+    const img = new SpyImageProvider();
+    const { pipeline, conv, user } = setup({ providers: [p], imageProviders: [img] });
+    const events = await collect(pipeline.run({ kind: "send", userId: user.id, conversationId: conv.id, text: "send me a selfie" }));
+    expect(p.requests.find((r) => !r.json)!.system).toMatch(/too early/);
+    expect(of(events, "image")).toHaveLength(0);
+    expect(img.requests).toHaveLength(0);
+    expect(of(events, "message")[0].message.content).not.toMatch(/\[photo/);
+  });
+
+  it("says it can't send photos when no image model fits", async () => {
+    const p = new SpyProvider(MATURE);
+    const { pipeline, conv, user, store, character } = setup({ providers: [p] });
+    await store.saveRelationship(user.id, character.id, { ...initialRelationship("FRIEND") });
+    await collect(pipeline.run({ kind: "send", userId: user.id, conversationId: conv.id, text: "send me a photo" }));
+    expect(p.requests.find((r) => !r.json)!.system).toMatch(/can't send pictures right now/);
+  });
+
+  it("refuses a photo that breaks the content level, before calling the image model", async () => {
+    const p = new SpyProvider(MATURE);
+    p.reply = () => "[photo: topless selfie on the beach]";
+    const img = new SpyImageProvider();
+    const { pipeline, conv, user, store, character } = setup({ providers: [p], imageProviders: [img], mode: "MATURE" });
+    await store.saveRelationship(user.id, character.id, { ...initialRelationship("FRIEND") });
+    const events = await collect(pipeline.run({ kind: "send", userId: user.id, conversationId: conv.id, text: "send me a photo" }));
+    expect(of(events, "image")[0].image).toMatchObject({ status: "failed", error: expect.stringMatching(/content level/) });
+    expect(img.requests).toHaveLength(0);
+  });
+
+  it("enforces the daily image limit", async () => {
+    const p = new SpyProvider(MATURE);
+    p.reply = photoReply;
+    const img = new SpyImageProvider();
+    const { pipeline, conv, user, store, character } = setup({ providers: [p], imageProviders: [img], dailyImageLimit: 0 });
+    await store.saveRelationship(user.id, character.id, { ...initialRelationship("FRIEND") });
+    const events = await collect(pipeline.run({ kind: "send", userId: user.id, conversationId: conv.id, text: "send me a pic" }));
+    expect(of(events, "image")[0].image).toMatchObject({ status: "failed", error: expect.stringMatching(/limit/) });
+    expect(img.requests).toHaveLength(0);
+  });
+
+  it("does not route around an image model's refusal", async () => {
+    const p = new SpyProvider(MATURE);
+    p.reply = photoReply;
+    const a = new SpyImageProvider({}, { id: "a", priority: 1 });
+    a.failWith = new ImageProviderError("blocked by safety system", "a", false);
+    const b = new SpyImageProvider({}, { id: "b", priority: 2 });
+    const { pipeline, conv, user, store, character } = setup({ providers: [p], imageProviders: [a, b] });
+    await store.saveRelationship(user.id, character.id, { ...initialRelationship("FRIEND") });
+    const events = await collect(pipeline.run({ kind: "send", userId: user.id, conversationId: conv.id, text: "send me a pic" }));
+    expect(of(events, "image")[0].image.status).toBe("failed");
+    expect(b.requests).toHaveLength(0);
+  });
+
+  it("regenerate deletes the photos of the discarded reply", async () => {
+    const p = new SpyProvider(MATURE);
+    p.reply = photoReply;
+    const { pipeline, conv, user, store, images, character } = setup({ providers: [p], imageProviders: [new SpyImageProvider()] });
+    await store.saveRelationship(user.id, character.id, { ...initialRelationship("FRIEND") });
+    await collect(pipeline.run({ kind: "send", userId: user.id, conversationId: conv.id, text: "send me a pic" }));
+    expect(images.rows).toHaveLength(1);
+    p.reply = () => "no more photos today.";
+    await collect(pipeline.run({ kind: "regenerate", userId: user.id, conversationId: conv.id }));
+    expect(images.rows).toHaveLength(0);
+  });
+
+  it("respects the user's photo setting", async () => {
+    const p = new SpyProvider(MATURE);
+    const { pipeline, conv, user, store, character } = setup({ providers: [p], imageProviders: [new SpyImageProvider()], user: { settings: { ...DEFAULT_USER_SETTINGS, imagesEnabled: false } } });
+    await store.saveRelationship(user.id, character.id, { ...initialRelationship("FRIEND") });
+    await collect(pipeline.run({ kind: "send", userId: user.id, conversationId: conv.id, text: "send me a photo" }));
+    expect(p.requests.find((r) => !r.json)!.system).toMatch(/can't send pictures right now/);
   });
 });

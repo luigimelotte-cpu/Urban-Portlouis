@@ -2,19 +2,22 @@ import { CONTENT_MODES, type ContentMode } from "../types";
 import { modeRank, supportsMode } from "../content/policy";
 import type { ModelProvider } from "./types";
 
+/** Anything the router can choose between: chat, utility and image providers. */
+export type Routable = Pick<ModelProvider, "descriptor" | "getCapabilities" | "isAvailable">;
+
 export type RoutingFallback = "downgrade" | "refuse";
 
-export interface RouteRequest {
+export interface RouteRequest<T extends Routable = ModelProvider> {
   mode: ContentMode;
-  role: "chat" | "utility";
-  providers: ModelProvider[];
+  role: "chat" | "utility" | "image";
+  providers: T[];
   preferredProviderId?: string | null;
   fallback?: RoutingFallback;
 }
 
-export interface RouteDecision {
+export interface RouteDecision<T extends Routable = ModelProvider> {
   /** Ordered list: first is used, the rest are failover candidates (same mode). */
-  candidates: ModelProvider[];
+  candidates: T[];
   mode: ContentMode;
   downgradedFrom?: ContentMode;
 }
@@ -33,7 +36,7 @@ export class NoCompatibleProviderError extends Error {
  * (and reports it) or refuses. It does not alter prompts to get around a
  * provider's rules.
  */
-export function routeProvider(req: RouteRequest): RouteDecision {
+export function routeProvider<T extends Routable = ModelProvider>(req: RouteRequest<T>): RouteDecision<T> {
   const usable = req.providers
     .filter((p) => p.descriptor.enabled && p.descriptor.roles.includes(req.role) && p.isAvailable())
     .sort((a, b) => {

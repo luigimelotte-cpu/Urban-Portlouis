@@ -6,7 +6,7 @@ import { Button, Field, Input, Segmented, Select } from "@/components/ui";
 
 type Mode = "SAFE" | "MATURE" | "ADULT";
 type Style = "CHAT" | "ROLEPLAY" | "STORY";
-type Me = { displayName: string | null; adultOptIn: boolean; settings: { preferredProviderId: string | null; defaultStyle: Style; memoryEnabled: boolean; requestedContentMode: Mode } };
+type Me = { displayName: string | null; adultOptIn: boolean; settings: { preferredProviderId: string | null; defaultStyle: Style; memoryEnabled: boolean; imagesEnabled: boolean; requestedContentMode: Mode } };
 type Provider = { id: string; label: string; maxMode: Mode | null };
 
 const RANK: Record<Mode, number> = { SAFE: 0, MATURE: 1, ADULT: 2 };
@@ -104,6 +104,14 @@ export function SettingsForm() {
           <span className="mt-0.5 block text-xs text-ink-400">Characters remember facts and moments across conversations.</span>
         </span>
         <input type="checkbox" checked={me.settings.memoryEnabled} onChange={(e) => save({ settings: { memoryEnabled: e.target.checked } })} className="accent-amber-glow" />
+      </label>
+
+      <label className="flex items-center justify-between rounded-xl border border-ink-700 p-3 text-sm">
+        <span>
+          <span className="text-ink-100">Photos</span>
+          <span className="mt-0.5 block text-xs text-ink-400">Characters can send you pictures when you ask, or on their own. Images follow the same content mode.</span>
+        </span>
+        <input type="checkbox" checked={me.settings.imagesEnabled !== false} onChange={(e) => save({ settings: { imagesEnabled: e.target.checked } })} className="accent-amber-glow" />
       </label>
 
       <section className="space-y-2 border-t border-ink-800 pt-6">

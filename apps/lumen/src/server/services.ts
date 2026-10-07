@@ -8,6 +8,8 @@ import { prisma } from "./db";
 import { getEmbedder } from "./embedder";
 import { dbPlatformSettings, dbProviderSource } from "./providers";
 import { prismaChatStore, prismaMemoryStore, readSettings, toCharacter, toMessage } from "./store";
+import { DAILY_IMAGE_LIMIT, prismaImageStore } from "./images";
+import { dbImageProviderSource } from "./providers";
 
 export function getPipeline() {
   return new ChatPipeline({
@@ -16,6 +18,7 @@ export function getPipeline() {
     providers: dbProviderSource,
     embedder: getEmbedder(),
     settings: dbPlatformSettings,
+    images: { providers: dbImageProviderSource, store: prismaImageStore, dailyLimit: DAILY_IMAGE_LIMIT },
   });
 }
 

@@ -10,10 +10,16 @@ export function MemoryDrawer({ characterId, characterName, onClose, onReset }: {
   const [memories, setMemories] = useState<Memory[] | null>(null);
   const [rel, setRel] = useState<Rel | null>(null);
   const [emotions, setEmotions] = useState<{ emotion: string; value: number }[]>([]);
-  const [tab, setTab] = useState<"LONG_TERM" | "EPISODIC">("LONG_TERM");
+  const [tab, setTab] = useState<"LONG_TERM" | "EPISODIC" | "PHOTOS">("LONG_TERM");
+  const [photos, setPhotos] = useState<{ id: string; url: string; caption: string }[] | null>(null);
 
   async function load() {
-    const [m, s] = await Promise.all([fetch(`/api/characters/${characterId}/memories`).then((r) => r.json()), fetch(`/api/characters/${characterId}/state`).then((r) => r.json())]);
+    const [m, s, p] = await Promise.all([
+      fetch(`/api/characters/${characterId}/memories`).then((r) => r.json()),
+      fetch(`/api/characters/${characterId}/state`).then((r) => r.json()),
+      fetch(`/api/characters/${characterId}/images`).then((r) => r.json()),
+    ]);
+    setPhotos(p.images ?? []);
     setMemories(m.memories ?? []);
     setRel(s.relationship ?? null);
     setEmotions(s.emotions ?? []);
@@ -63,13 +69,26 @@ export function MemoryDrawer({ characterId, characterName, onClose, onReset }: {
 
         <section className="mt-6">
           <div className="flex gap-4 border-b border-ink-700 text-sm">
-            {(["LONG_TERM", "EPISODIC"] as const).map((t) => (
+            {(["LONG_TERM", "EPISODIC", "PHOTOS"] as const).map((t) => (
               <button key={t} onClick={() => setTab(t)} className={`-mb-px border-b-2 pb-2 ${tab === t ? "border-amber-glow text-ink-100" : "border-transparent text-ink-400"}`}>
-                {t === "LONG_TERM" ? "About you" : "Moments"}
+                {t === "LONG_TERM" ? "About you" : t === "EPISODIC" ? "Moments" : `Photos${photos?.length ? ` · ${photos.length}` : ""}`}
               </button>
             ))}
           </div>
-          {memories === null ? (
+          {tab === "PHOTOS" ? (
+            photos && photos.length ? (
+              <div className="grid grid-cols-3 gap-1.5 pt-3">
+                {photos.map((ph) => (
+                  <a key={ph.id} href={ph.url} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-lg" title={ph.caption}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={ph.url} alt={ph.caption} className="aspect-square w-full object-cover" loading="lazy" />
+                  </a>
+                ))}
+              </div>
+            ) : (
+              <p className="py-6 text-center text-sm text-ink-400">No photos yet. Ask {characterName} for one with 📷.</p>
+            )
+          ) : memories === null ? (
             <p className="py-6 text-center text-sm text-ink-400">…</p>
           ) : shown.length === 0 ? (
             <p className="py-6 text-center text-sm text-ink-400">Nothing yet.</p>
