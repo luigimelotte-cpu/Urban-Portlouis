@@ -190,9 +190,19 @@ const CHARACTERS: Seed[] = [
   },
 ];
 
+// Starter portraits generated from each character's appearance (public/characters).
+const PORTRAITS: Record<string, string> = {
+  "Mila Ferreira": "/characters/mila.jpg",
+  "Aïsha Rambhujun": "/characters/aisha.jpg",
+  "Noor Haddad": "/characters/noor.jpg",
+  "Julien Marchetti": "/characters/julien.jpg",
+  "Kai Morgan": "/characters/kai.jpg",
+  "Elena Voss": "/characters/elena.jpg",
+};
+
 async function main() {
   for (const seed of CHARACTERS) {
-    const input = CharacterInputSchema.parse({ ...seed, visibility: "PUBLIC", avatarUrl: null });
+    const input = CharacterInputSchema.parse({ ...seed, visibility: "PUBLIC", avatarUrl: PORTRAITS[seed.name] ?? null });
     const problems = validateCharacterForPolicy(input);
     if (problems.length) throw new Error(`${seed.name}: ${problems.join("; ")}`);
     const existing = await prisma.character.findFirst({ where: { name: input.name, creatorId: null } });
@@ -204,6 +214,7 @@ async function main() {
       tags: input.tags,
       visibility: input.visibility,
       maxContentMode: input.maxContentMode,
+      avatarUrl: input.avatarUrl ?? null,
       profile: input.profile as object,
     };
     if (existing) await prisma.character.update({ where: { id: existing.id }, data });

@@ -18,7 +18,7 @@ cp .env.example .env              # edit SESSION_SECRET and ADMIN_TOKEN
 docker compose up -d              # PostgreSQL 16 + pgvector (or use your own)
 npm install                       # also runs `prisma generate`
 npm run db:migrate                # schema + CHECK constraints + HNSW index
-npm run db:seed                   # 6 demo characters
+npm run db:seed                   # 6 demo characters with starter portraits (public/characters)
 npm run dev                       # http://localhost:3000
 ```
 
