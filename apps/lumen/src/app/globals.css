@@ -1,0 +1,81 @@
+@import "tailwindcss";
+
+/* Lumen — dusk palette: ink-plum surfaces, candle-amber accent, rose for warmth. */
+@theme {
+  --color-ink-950: #0d0a10;
+  --color-ink-900: #15111a;
+  --color-ink-850: #1b1622;
+  --color-ink-800: #221c2b;
+  --color-ink-700: #2e2639;
+  --color-ink-600: #3d3449;
+  --color-ink-400: #7d7189;
+  --color-ink-300: #a69bb1;
+  --color-ink-100: #ece6f1;
+  --color-amber-glow: #f2b46d;
+  --color-amber-deep: #d98a3d;
+  --color-rose-glow: #e8748f;
+  --color-rose-deep: #b84a68;
+  --font-display: var(--font-fraunces), ui-serif, Georgia, serif;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: var(--color-ink-950);
+  color: var(--color-ink-100);
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.glow-ring {
+  box-shadow: 0 0 0 1px rgb(242 180 109 / 0.25), 0 8px 30px -10px rgb(232 116 143 / 0.35);
+}
+
+.bubble-char {
+  background: linear-gradient(160deg, var(--color-ink-800), var(--color-ink-850));
+}
+.bubble-user {
+  background: linear-gradient(150deg, var(--color-rose-deep), #8f3a5a);
+}
+
+.typing span {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 2px;
+  border-radius: 9999px;
+  background: var(--color-ink-300);
+  animation: typing 1.2s infinite ease-in-out;
+}
+.typing span:nth-child(2) { animation-delay: 0.15s; }
+.typing span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typing {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+.photo-pending {
+  background: linear-gradient(110deg, var(--color-ink-800) 30%, var(--color-ink-700) 50%, var(--color-ink-800) 70%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+
+.fade-in { animation: fadeIn 0.25s ease-out both; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+input[type="range"] { accent-color: var(--color-amber-glow); }
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .fade-in, .typing span, .photo-pending { animation: none; }
+}
